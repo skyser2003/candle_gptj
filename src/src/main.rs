@@ -2,17 +2,30 @@ mod component;
 
 use std::env;
 
+use clap::Parser;
+
 use candle_core::{Device, Tensor};
 use candle_nn::Dropout;
 
 use component::model::ModelLoader;
 
+#[derive(Parser, Debug)]
+struct Arguments {
+    #[arg(short, long)]
+    model_dir: String,
+
+    #[arg(short, long)]
+    tokenizer_dir: String,
+}
+
 #[tokio::main]
 async fn main() {
-    println!("Hello, world!");
+    let args = Arguments::parse();
 
-    let model_dir = env::var("MODEL_DIR").unwrap();
-    let tokenizer_dir = env::var("TOKENIZER_DIR").unwrap();
+    println!("args: {:?}", args);
+
+    let model_dir = args.model_dir;
+    let tokenizer_dir = args.tokenizer_dir;
 
     let device = Device::Cpu;
 
