@@ -34,6 +34,7 @@ async fn main() {
         "Vocab size: {:?}",
         loader.get_tokenizer().get_vocab_size(true)
     );
+    println!("Config: {:?}", loader.get_config());
 
     let tensor = Tensor::new(&[2u32, 2, 2], &device).unwrap();
     let dropout = Dropout::new(0.5);
