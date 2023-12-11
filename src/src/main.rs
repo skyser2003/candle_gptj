@@ -27,14 +27,13 @@ async fn main() {
 
     let device = Device::Cpu;
 
-    let loader = ModelLoader::new(&model_dir, &tokenizer_dir);
+    let loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
 
     println!("Tensor keys: {:?}", loader.get_tensors().names());
     println!(
         "Vocab size: {:?}",
         loader.get_tokenizer().get_vocab_size(true)
     );
-    println!("Config: {:?}", loader.get_config());
 
     let tensor = Tensor::new(&[2u32, 2, 2], &device).unwrap();
     let dropout = Dropout::new(0.5);
