@@ -16,6 +16,7 @@ pub struct ModelWrapper {
     pub model_filename: PathBuf,
     pub device: Device,
     pub config: Config,
+    pub model: CoreModel,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -45,7 +46,7 @@ pub struct Config {
     pub torch_dtype: Option<String>,
     pub transformers_version: String,
     pub use_cache: bool,
-    pub vocab_size: i64,
+    pub vocab_size: usize,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -55,6 +56,12 @@ pub struct QuantizationConfig {
     pub quant_method: String,
     pub version: String,
     pub zero_point: bool,
+}
+
+pub struct CoreModel {
+    pub word_token_embedding: Embedding,
+    pub hidden_layers: Vec<HiddenLayer>,
+    pub layernorm_final: LayerNorm,
 }
 
 pub struct HiddenLayer {
@@ -86,13 +93,15 @@ impl ModelLoader {
 
         let model_filename = model_dir.join("model.safetensors");
         let buffer = Self::load_model(&model_filename);
+        let core_model = CoreModel::new(&model_filename, &device, &config);
+
         let model = ModelWrapper {
             model_filename,
             buffer,
             device: device.clone(),
             config,
+            model: core_model,
         };
-        model.load_weights();
 
         let tokenizer_dir = std::path::Path::new(tokenizer_dir);
         let tokenizer_filename = tokenizer_dir.join("tokenizer.json");
@@ -129,62 +138,79 @@ impl ModelWrapper {
 
         return tensors;
     }
+}
 
-    fn load_weights(&self) {
+impl CoreModel {
+    fn new(model_filename: &PathBuf, device: &Device, config: &Config) -> CoreModel {
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
-                &[self.model_filename.clone()],
+                &[model_filename.clone()],
                 candle_core::DType::F16,
-                &self.device,
+                &device,
             )
             .unwrap()
         };
 
-        let hidden_layers_var = vb.pp("transformer.h");
-        let inner_size = self.config.n_inner.unwrap_or(4 * self.config.n_embd);
+        let tf_vb = vb.pp("transformer");
 
-        let layers = (0..self.config.n_layer)
+        let word_token_embedding = Embedding::new(
+            tf_vb
+                .get((config.vocab_size, config.n_embd), "wte.weight")
+                .unwrap(),
+            config.n_embd,
+        );
+
+        let hidden_layers_vb = tf_vb.pp("h");
+        let inner_size = config.n_inner.unwrap_or(4 * config.n_embd);
+
+        let layers = (0..config.n_layer)
             .map(|i| {
-                let layer_var = hidden_layers_var.pp(&format!("{}", i));
+                let layer_vb = hidden_layers_vb.pp(&format!("{}", i));
                 let layer = HiddenLayer::new(
-                    layer_var,
-                    self.config.n_embd,
+                    layer_vb,
+                    config.n_embd,
                     inner_size,
-                    self.config.layer_norm_epsilon,
+                    config.layer_norm_epsilon,
                 );
 
                 layer
             })
             .collect::<Vec<_>>();
 
-        let transformers = vb.pp("transformer");
-        println!(
-            "Exists? - {}",
-            transformers.contains_tensor("h.15.ln_1.weight")
+        let layernorm_final = LayerNorm::new(
+            tf_vb.get(config.n_embd, "ln_f.weight").unwrap(),
+            tf_vb.get(config.n_embd, "ln_f.bias").unwrap(),
+            config.layer_norm_epsilon,
         );
+
+        Self {
+            word_token_embedding,
+            hidden_layers: layers,
+            layernorm_final,
+        }
     }
 }
 
 impl HiddenLayer {
     pub fn new(
-        layer_var: VarBuilder,
+        layer_vb: VarBuilder,
         embed_size: usize,
         inner_size: usize,
         lm_eps: f64,
     ) -> HiddenLayer {
-        let layer_norm_var = layer_var.pp("ln_1");
-        let attn_var = layer_var.pp("attn");
-        let mlp_var = layer_var.pp("mlp");
+        let layer_norm_vb = layer_vb.pp("ln_1");
+        let attn_vb = layer_vb.pp("attn");
+        let mlp_vb = layer_vb.pp("mlp");
 
         let layer_norm = LayerNorm::new(
-            layer_norm_var.get(embed_size, "weight").unwrap(),
-            layer_norm_var.get(embed_size, "bias").unwrap(),
+            layer_norm_vb.get(embed_size, "weight").unwrap(),
+            layer_norm_vb.get(embed_size, "bias").unwrap(),
             lm_eps,
         );
 
-        let attention = Attention::new(attn_var, embed_size);
+        let attention = Attention::new(attn_vb, embed_size);
 
-        let mlp = MLP::new(mlp_var, inner_size, embed_size);
+        let mlp = MLP::new(mlp_vb, inner_size, embed_size);
 
         HiddenLayer {
             layer_norm,
