@@ -1,10 +1,6 @@
-use std::{
-    fs::File,
-    ops::{Div, Mul},
-    path::PathBuf,
-};
+use std::{fs::File, path::PathBuf};
 
-use candle_core::{quantized::k_quants, Device, Tensor};
+use candle_core::{Device, Tensor};
 use candle_nn::{Embedding, LayerNorm, Linear, Module, VarBuilder};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
@@ -81,6 +77,7 @@ pub struct Attention {
     pub out: Linear,
     pub num_heads: usize,
     pub head_size: usize,
+    pub embed_positions: Tensor,
 }
 
 pub struct MLP {
@@ -305,17 +302,20 @@ impl Attention {
             out,
             num_heads,
             head_size,
+            embed_positions,
         }
     }
 
-    fn forward(&self, input: &Tensor, device: &Device) -> Tensor {
-        let q = self.q.forward(&input).unwrap();
-        let k = self.k.forward(&input).unwrap();
-        let v = self.v.forward(&input).unwrap();
+    fn forward(&self, hidden_states: &Tensor, position_ids: &Tensor, device: &Device) -> Tensor {
+        let q = self.q.forward(&hidden_states).unwrap();
+        let k = self.k.forward(&hidden_states).unwrap();
+        let v = self.v.forward(&hidden_states).unwrap();
 
         let q = Self::split_heads(&q, self.num_heads, self.head_size, true);
         let k = Self::split_heads(&k, self.num_heads, self.head_size, true);
         let v = Self::split_heads(&v, self.num_heads, self.head_size, false);
+
+        let embed_positions = self.get_embed_positions(position_ids);
     }
 
     fn create_sinusoidal_positions(num_pos: usize, dimension: usize, device: &Device) -> Tensor {
@@ -350,7 +350,13 @@ impl Attention {
         }
     }
 
-    fn get_embed_positions(input: &Tensor) -> Tensor {}
+    fn get_embed_positions(&mut self, input: &Tensor) -> Tensor {
+        self.embed_positions = self.embed_positions.to_device(input.device()).unwrap();
+
+        self.embed_positions
+            .repeat((input.shape().dims()[0], 1, 1))
+            .unwrap()
+    }
 }
 
 impl MLP {
