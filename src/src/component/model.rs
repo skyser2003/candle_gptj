@@ -1,7 +1,7 @@
 use std::{fs::File, path::PathBuf};
 
 use candle_core::Device;
-use candle_nn::{Embedding, LayerNorm, VarBuilder};
+use candle_nn::{Embedding, LayerNorm, Linear, VarBuilder};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
 use tokenizers::Tokenizer;
@@ -64,15 +64,15 @@ pub struct HiddenLayer {
 }
 
 pub struct Attention {
-    pub q: Embedding,
-    pub k: Embedding,
-    pub v: Embedding,
-    pub out: Embedding,
+    pub q: Linear,
+    pub k: Linear,
+    pub v: Linear,
+    pub out: Linear,
 }
 
 pub struct MLP {
-    pub fc_in: Embedding,
-    pub fc_out: Embedding,
+    pub fc_in: Linear,
+    pub fc_out: Linear,
 }
 
 impl ModelLoader {
@@ -196,10 +196,22 @@ impl HiddenLayer {
 
 impl Attention {
     pub fn new(vb: VarBuilder, embed_size: usize) -> Attention {
-        let q = Embedding::new(vb.get(embed_size, "q_proj.weight").unwrap(), embed_size);
-        let k = Embedding::new(vb.get(embed_size, "k_proj.weight").unwrap(), embed_size);
-        let v = Embedding::new(vb.get(embed_size, "v_proj.weight").unwrap(), embed_size);
-        let out = Embedding::new(vb.get(embed_size, "out_proj.weight").unwrap(), embed_size);
+        let q = Linear::new(
+            vb.get((embed_size, embed_size), "q_proj.weight").unwrap(),
+            None,
+        );
+        let k = Linear::new(
+            vb.get((embed_size, embed_size), "k_proj.weight").unwrap(),
+            None,
+        );
+        let v = Linear::new(
+            vb.get((embed_size, embed_size), "v_proj.weight").unwrap(),
+            None,
+        );
+        let out = Linear::new(
+            vb.get((embed_size, embed_size), "out_proj.weight").unwrap(),
+            None,
+        );
 
         Attention { q, k, v, out }
     }
@@ -207,8 +219,14 @@ impl Attention {
 
 impl MLP {
     pub fn new(vb: VarBuilder, inter_size: usize, embed_size: usize) -> MLP {
-        let fc_in = Embedding::new(vb.get(embed_size, "fc_in.weight").unwrap(), inter_size);
-        let fc_out = Embedding::new(vb.get(inter_size, "fc_out.weight").unwrap(), embed_size);
+        let fc_in = Linear::new(
+            vb.get((inter_size, embed_size), "fc_in.weight").unwrap(),
+            Some(vb.get(inter_size, "fc_in.bias").unwrap()),
+        );
+        let fc_out = Linear::new(
+            vb.get((embed_size, inter_size), "fc_out.weight").unwrap(),
+            Some(vb.get(embed_size, "fc_out.bias").unwrap()),
+        );
 
         MLP { fc_in, fc_out }
     }
