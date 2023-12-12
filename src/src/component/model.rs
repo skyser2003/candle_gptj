@@ -1,7 +1,11 @@
-use std::{fs::File, path::PathBuf};
+use std::{
+    fs::File,
+    ops::{Div, Mul},
+    path::PathBuf,
+};
 
-use candle_core::Device;
-use candle_nn::{Embedding, LayerNorm, Linear, VarBuilder};
+use candle_core::{quantized::k_quants, Device, Tensor};
+use candle_nn::{Embedding, LayerNorm, Linear, Module, VarBuilder};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
 use tokenizers::Tokenizer;
@@ -25,21 +29,21 @@ pub struct Config {
     pub activation_function: String,
     pub architectures: Vec<String>,
     pub attn_pdrop: f32,
-    pub bos_token_id: i64,
+    pub bos_token_id: usize,
     pub embd_pdrop: f32,
-    pub eos_token_id: i64,
+    pub eos_token_id: usize,
     pub initializer_range: f32,
     pub layer_norm_epsilon: f64,
     pub model_type: String,
     pub n_embd: usize,
-    pub n_head: i64,
+    pub n_head: usize,
     pub n_inner: Option<usize>,
-    pub n_layer: i64,
-    pub n_positions: i64,
-    pub pad_token_id: Option<i64>,
+    pub n_layer: usize,
+    pub n_positions: usize,
+    pub pad_token_id: Option<usize>,
     pub quantization_config: Option<QuantizationConfig>,
     pub resid_pdrop: f32,
-    pub rotary_dim: i64,
+    pub rotary_dim: Option<usize>,
     pub rotary_pct: Option<f32>,
     pub scale_attn_weights: bool,
     pub tie_word_embeddings: bool,
@@ -75,6 +79,8 @@ pub struct Attention {
     pub k: Linear,
     pub v: Linear,
     pub out: Linear,
+    pub num_heads: usize,
+    pub head_size: usize,
 }
 
 pub struct MLP {
@@ -170,7 +176,11 @@ impl CoreModel {
                     layer_vb,
                     config.n_embd,
                     inner_size,
+                    config.n_head,
                     config.layer_norm_epsilon,
+                    config.n_positions,
+                    config.rotary_dim.unwrap_or(config.n_embd),
+                    device,
                 );
 
                 layer
@@ -189,6 +199,22 @@ impl CoreModel {
             layernorm_final,
         }
     }
+
+    fn forward(&self, input_ids: &Vec<i64>, device: &Device) -> Tensor {
+        let input_ids = Tensor::new(input_ids.clone(), device).unwrap();
+
+        let input_ids = self.word_token_embedding.forward(&input_ids).unwrap();
+
+        let mut hidden_state = input_ids;
+
+        for layer in &self.hidden_layers {
+            hidden_state = layer.forward(&hidden_state, device);
+        }
+
+        hidden_state = self.layernorm_final.forward(&hidden_state).unwrap();
+
+        hidden_state
+    }
 }
 
 impl HiddenLayer {
@@ -196,7 +222,11 @@ impl HiddenLayer {
         layer_vb: VarBuilder,
         embed_size: usize,
         inner_size: usize,
+        num_heads: usize,
         lm_eps: f64,
+        max_pos_embeddings: usize,
+        pos_embed_dimension: usize,
+        device: &Device,
     ) -> HiddenLayer {
         let layer_norm_vb = layer_vb.pp("ln_1");
         let attn_vb = layer_vb.pp("attn");
@@ -208,7 +238,17 @@ impl HiddenLayer {
             lm_eps,
         );
 
-        let attention = Attention::new(attn_vb, embed_size);
+        let head_size = embed_size / num_heads;
+
+        let attention = Attention::new(
+            attn_vb,
+            embed_size,
+            num_heads,
+            head_size,
+            max_pos_embeddings,
+            pos_embed_dimension,
+            device,
+        );
 
         let mlp = MLP::new(mlp_vb, inner_size, embed_size);
 
@@ -218,10 +258,26 @@ impl HiddenLayer {
             mlp,
         }
     }
+
+    fn forward(&self, input: &Tensor, device: &Device) -> Tensor {
+        let input = self.layer_norm.forward(&input).unwrap();
+        let attn_output = self.attention.forward(&input, device);
+        let mlp_output = self.mlp.forward(&attn_output);
+
+        input + mlp_output
+    }
 }
 
 impl Attention {
-    pub fn new(vb: VarBuilder, embed_size: usize) -> Attention {
+    pub fn new(
+        vb: VarBuilder,
+        embed_size: usize,
+        num_heads: usize,
+        head_size: usize,
+        max_pos_embeddings: usize,
+        pos_embed_dimension: usize,
+        device: &Device,
+    ) -> Attention {
         let q = Linear::new(
             vb.get((embed_size, embed_size), "q_proj.weight").unwrap(),
             None,
@@ -239,8 +295,62 @@ impl Attention {
             None,
         );
 
-        Attention { q, k, v, out }
+        let embed_positions =
+            Self::create_sinusoidal_positions(max_pos_embeddings, pos_embed_dimension, device);
+
+        Attention {
+            q,
+            k,
+            v,
+            out,
+            num_heads,
+            head_size,
+        }
     }
+
+    fn forward(&self, input: &Tensor, device: &Device) -> Tensor {
+        let q = self.q.forward(&input).unwrap();
+        let k = self.k.forward(&input).unwrap();
+        let v = self.v.forward(&input).unwrap();
+
+        let q = Self::split_heads(&q, self.num_heads, self.head_size, true);
+        let k = Self::split_heads(&k, self.num_heads, self.head_size, true);
+        let v = Self::split_heads(&v, self.num_heads, self.head_size, false);
+    }
+
+    fn create_sinusoidal_positions(num_pos: usize, dimension: usize, device: &Device) -> Tensor {
+        let inv_freq = (0..dimension)
+            .step_by(2)
+            .map(|x| 1f64 / (10000f64.powf(x as f64 / dimension as f64)))
+            .collect::<Vec<_>>();
+
+        Tensor::new(inv_freq, device).unwrap()
+    }
+
+    fn split_heads(input: &Tensor, num_heads: usize, head_size: usize, do_rotary: bool) -> Tensor {
+        let tensor_shape = input.shape();
+
+        let new_shape = &input.dims()[0..input.dims().len() - 1];
+        let new_shape = new_shape
+            .iter()
+            .chain(&[num_heads, head_size])
+            .map(|x| *x)
+            .collect::<Vec<_>>();
+
+        let ret = input.reshape(new_shape).unwrap();
+
+        if do_rotary {
+            ret
+        } else if new_shape.len() == 5 {
+            ret.permute((0, 1, 3, 2, 4)).unwrap()
+        } else if new_shape.len() == 4 {
+            ret.permute((0, 2, 1, 3)).unwrap()
+        } else {
+            panic!("Invalid shape")
+        }
+    }
+
+    fn get_embed_positions(input: &Tensor) -> Tensor {}
 }
 
 impl MLP {
@@ -255,5 +365,13 @@ impl MLP {
         );
 
         MLP { fc_in, fc_out }
+    }
+
+    fn forward(&self, input: &Tensor) -> Tensor {
+        let input = self.fc_in.forward(&input).unwrap();
+        let input = input.gelu().unwrap();
+        let input = self.fc_out.forward(&input).unwrap();
+
+        input
     }
 }
