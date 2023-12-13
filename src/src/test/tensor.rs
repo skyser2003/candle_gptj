@@ -1,9 +1,9 @@
-use candle_core::{Device, Tensor};
-use candle_nn::{self, Dropout};
 use tokio;
 
 #[tokio::test]
 async fn broadcast_mul() {
+    use candle_core::{Device, Tensor};
+
     let device = Device::Cpu;
 
     let tensor1 = Tensor::new(&[[1u32, 2, 3]], &device).unwrap();
@@ -15,6 +15,9 @@ async fn broadcast_mul() {
 
 #[tokio::test]
 async fn dropout() {
+    use candle_core::{Device, Tensor};
+    use candle_nn::{self, Dropout};
+
     let device = Device::Cpu;
 
     let tensor1 = Tensor::new(&[[1u32, 2, 3]], &device).unwrap();
