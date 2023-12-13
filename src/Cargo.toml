@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.75"
 candle-core = { version = "0.3.1", features = ["mkl"] }
 candle-nn = { version = "0.3.1", features = ["mkl"] }
 clap = "4.4.11"
