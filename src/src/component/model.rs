@@ -342,9 +342,15 @@ impl Attention {
             .map(|x| 1f64 / (10000f64.powf(x as f64 / dimension as f64)))
             .collect::<Vec<_>>();
 
-        // TODO: Implement this
+        let inv_freq = Tensor::new(inv_freq, device).unwrap();
+        let pos_ids = Tensor::arange(0f32, num_pos as f32, device).unwrap();
 
-        Tensor::new(inv_freq, device).unwrap()
+        let sinusoid_inp = pos_ids.broadcast_mul(&inv_freq).unwrap();
+
+        let sin = Tensor::sin(&sinusoid_inp).unwrap();
+        let cos = Tensor::cos(&sinusoid_inp).unwrap();
+
+        Tensor::cat(&[sin, cos], 1).unwrap()
     }
 
     fn split_heads(input: &Tensor, num_heads: usize, head_size: usize, do_rotary: bool) -> Tensor {
