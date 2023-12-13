@@ -197,15 +197,20 @@ impl CoreModel {
         }
     }
 
-    fn forward(&self, input_ids: &Vec<i64>, device: &Device) -> Tensor {
+    fn forward(
+        &mut self,
+        input_ids: &Vec<i64>,
+        position_ids: Option<&Tensor>,
+        device: &Device,
+    ) -> Tensor {
         let input_ids = Tensor::new(input_ids.clone(), device).unwrap();
 
         let input_ids = self.word_token_embedding.forward(&input_ids).unwrap();
 
         let mut hidden_state = input_ids;
 
-        for layer in &self.hidden_layers {
-            hidden_state = layer.forward(&hidden_state, device);
+        for layer in &mut self.hidden_layers {
+            hidden_state = layer.forward(&hidden_state, position_ids.unwrap(), device);
         }
 
         hidden_state = self.layernorm_final.forward(&hidden_state).unwrap();
@@ -256,12 +261,12 @@ impl HiddenLayer {
         }
     }
 
-    fn forward(&self, input: &Tensor, device: &Device) -> Tensor {
-        let input = self.layer_norm.forward(&input).unwrap();
-        let attn_output = self.attention.forward(&input, device);
+    fn forward(&mut self, input: &Tensor, position_ids: &Tensor, device: &Device) -> Tensor {
+        let hidden_states = self.layer_norm.forward(&input).unwrap();
+        let attn_output = self.attention.forward(&hidden_states, position_ids, device);
         let mlp_output = self.mlp.forward(&attn_output);
 
-        input + mlp_output
+        (hidden_states + mlp_output).unwrap()
     }
 }
 
@@ -306,7 +311,12 @@ impl Attention {
         }
     }
 
-    fn forward(&self, hidden_states: &Tensor, position_ids: &Tensor, device: &Device) -> Tensor {
+    fn forward(
+        &mut self,
+        hidden_states: &Tensor,
+        position_ids: &Tensor,
+        device: &Device,
+    ) -> Tensor {
         let q = self.q.forward(&hidden_states).unwrap();
         let k = self.k.forward(&hidden_states).unwrap();
         let v = self.v.forward(&hidden_states).unwrap();
@@ -316,6 +326,14 @@ impl Attention {
         let v = Self::split_heads(&v, self.num_heads, self.head_size, false);
 
         let embed_positions = self.get_embed_positions(position_ids);
+
+        let repeated_position_ids = position_ids
+            .unsqueeze(*position_ids.dims().last().unwrap() - 1)
+            .unwrap()
+            .repeat(&[1, 1, *embed_positions.shape().dims().last().unwrap() - 1])
+            .unwrap();
+
+        Tensor::new(vec![1i64], device).unwrap()
     }
 
     fn create_sinusoidal_positions(num_pos: usize, dimension: usize, device: &Device) -> Tensor {
@@ -324,12 +342,12 @@ impl Attention {
             .map(|x| 1f64 / (10000f64.powf(x as f64 / dimension as f64)))
             .collect::<Vec<_>>();
 
+        // TODO: Implement this
+
         Tensor::new(inv_freq, device).unwrap()
     }
 
     fn split_heads(input: &Tensor, num_heads: usize, head_size: usize, do_rotary: bool) -> Tensor {
-        let tensor_shape = input.shape();
-
         let new_shape = &input.dims()[0..input.dims().len() - 1];
         let new_shape = new_shape
             .iter()
@@ -337,7 +355,7 @@ impl Attention {
             .map(|x| *x)
             .collect::<Vec<_>>();
 
-        let ret = input.reshape(new_shape).unwrap();
+        let ret = input.reshape(new_shape.clone()).unwrap();
 
         if do_rotary {
             ret
