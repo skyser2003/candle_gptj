@@ -1,6 +1,6 @@
 use std::{fs::File, path::PathBuf};
 
-use candle_core::{Device, Tensor};
+use candle_core::{Device, Tensor, D};
 use candle_nn::{Embedding, LayerNorm, Linear, Module, VarBuilder};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
@@ -328,9 +328,9 @@ impl Attention {
         let embed_positions = self.get_embed_positions(position_ids);
 
         let repeated_position_ids = position_ids
-            .unsqueeze(*position_ids.dims().last().unwrap() - 1)
+            .unsqueeze(D::Minus1)
             .unwrap()
-            .repeat(&[1, 1, *embed_positions.shape().dims().last().unwrap() - 1])
+            .repeat(&[1, 1, embed_positions.dim(D::Minus1).unwrap()])
             .unwrap();
 
         Tensor::new(vec![1i64], device).unwrap()
@@ -354,7 +354,7 @@ impl Attention {
     }
 
     fn split_heads(input: &Tensor, num_heads: usize, head_size: usize, do_rotary: bool) -> Tensor {
-        let new_shape = &input.dims()[0..input.dims().len() - 1];
+        let new_shape = &input.dims()[0..input.dim(D::Minus1).unwrap()];
         let new_shape = new_shape
             .iter()
             .chain(&[num_heads, head_size])
