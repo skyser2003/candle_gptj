@@ -1,6 +1,6 @@
 use std::{fs::File, path::PathBuf};
 
-use candle_core::{Device, Tensor, D};
+use candle_core::{Device, Result, Tensor, D};
 use candle_nn::{Embedding, LayerNorm, Linear, Module, VarBuilder};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
@@ -202,20 +202,20 @@ impl CoreModel {
         input_ids: &Vec<i64>,
         position_ids: Option<&Tensor>,
         device: &Device,
-    ) -> Tensor {
-        let input_ids = Tensor::new(input_ids.clone(), device).unwrap();
+    ) -> Result<Tensor> {
+        let input_ids = Tensor::new(input_ids.clone(), device)?;
 
-        let input_ids = self.word_token_embedding.forward(&input_ids).unwrap();
+        let input_ids = self.word_token_embedding.forward(&input_ids)?;
 
         let mut hidden_state = input_ids;
 
         for layer in &mut self.hidden_layers {
-            hidden_state = layer.forward(&hidden_state, position_ids.unwrap(), device);
+            hidden_state = layer.forward(&hidden_state, position_ids.unwrap(), device)?;
         }
 
-        hidden_state = self.layernorm_final.forward(&hidden_state).unwrap();
+        hidden_state = self.layernorm_final.forward(&hidden_state)?;
 
-        hidden_state
+        Ok(hidden_state)
     }
 }
 
@@ -261,12 +261,19 @@ impl HiddenLayer {
         }
     }
 
-    fn forward(&mut self, input: &Tensor, position_ids: &Tensor, device: &Device) -> Tensor {
-        let hidden_states = self.layer_norm.forward(&input).unwrap();
-        let attn_output = self.attention.forward(&hidden_states, position_ids, device);
-        let mlp_output = self.mlp.forward(&attn_output);
+    fn forward(
+        &mut self,
+        input: &Tensor,
+        position_ids: &Tensor,
+        device: &Device,
+    ) -> Result<Tensor> {
+        let hidden_states = self.layer_norm.forward(&input)?;
+        let attn_output = self
+            .attention
+            .forward(&hidden_states, position_ids, device)?;
+        let mlp_output = self.mlp.forward(&attn_output)?;
 
-        (hidden_states + mlp_output).unwrap()
+        hidden_states + mlp_output
     }
 }
 
@@ -298,7 +305,8 @@ impl Attention {
         );
 
         let embed_positions =
-            Self::create_sinusoidal_positions(max_pos_embeddings, pos_embed_dimension, device);
+            Self::create_sinusoidal_positions(max_pos_embeddings, pos_embed_dimension, device)
+                .unwrap();
 
         Attention {
             q,
@@ -316,70 +324,76 @@ impl Attention {
         hidden_states: &Tensor,
         position_ids: &Tensor,
         device: &Device,
-    ) -> Tensor {
-        let q = self.q.forward(&hidden_states).unwrap();
-        let k = self.k.forward(&hidden_states).unwrap();
-        let v = self.v.forward(&hidden_states).unwrap();
+    ) -> Result<Tensor> {
+        let q = self.q.forward(&hidden_states)?;
+        let k = self.k.forward(&hidden_states)?;
+        let v = self.v.forward(&hidden_states)?;
 
         let q = Self::split_heads(&q, self.num_heads, self.head_size, true);
         let k = Self::split_heads(&k, self.num_heads, self.head_size, true);
         let v = Self::split_heads(&v, self.num_heads, self.head_size, false);
 
-        let embed_positions = self.get_embed_positions(position_ids);
+        let embed_positions = self.get_embed_positions(position_ids)?;
 
-        let repeated_position_ids = position_ids
-            .unsqueeze(D::Minus1)
-            .unwrap()
-            .repeat(&[1, 1, embed_positions.dim(D::Minus1).unwrap()])
-            .unwrap();
+        let repeated_position_ids =
+            position_ids
+                .unsqueeze(D::Minus1)?
+                .repeat(&[1, 1, embed_positions.dim(D::Minus1)?])?;
 
-        Tensor::new(vec![1i64], device).unwrap()
+        Tensor::new(vec![1i64], device)
     }
 
-    fn create_sinusoidal_positions(num_pos: usize, dimension: usize, device: &Device) -> Tensor {
+    fn create_sinusoidal_positions(
+        num_pos: usize,
+        dimension: usize,
+        device: &Device,
+    ) -> Result<Tensor> {
         let inv_freq = (0..dimension)
             .step_by(2)
             .map(|x| 1f64 / (10000f64.powf(x as f64 / dimension as f64)))
             .collect::<Vec<_>>();
 
-        let inv_freq = Tensor::new(inv_freq, device).unwrap();
-        let pos_ids = Tensor::arange(0f32, num_pos as f32, device).unwrap();
+        let inv_freq = Tensor::new(inv_freq, device)?;
+        let pos_ids = Tensor::arange(0f32, num_pos as f32, device)?;
 
-        let sinusoid_inp = pos_ids.broadcast_mul(&inv_freq).unwrap();
+        let sinusoid_inp = pos_ids.broadcast_mul(&inv_freq)?;
 
-        let sin = Tensor::sin(&sinusoid_inp).unwrap();
-        let cos = Tensor::cos(&sinusoid_inp).unwrap();
+        let sin = Tensor::sin(&sinusoid_inp)?;
+        let cos = Tensor::cos(&sinusoid_inp)?;
 
-        Tensor::cat(&[sin, cos], 1).unwrap()
+        Tensor::cat(&[sin, cos], 1)
     }
 
-    fn split_heads(input: &Tensor, num_heads: usize, head_size: usize, do_rotary: bool) -> Tensor {
-        let new_shape = &input.dims()[0..input.dim(D::Minus1).unwrap()];
+    fn split_heads(
+        input: &Tensor,
+        num_heads: usize,
+        head_size: usize,
+        do_rotary: bool,
+    ) -> Result<Tensor> {
+        let new_shape = &input.dims()[0..input.dim(D::Minus1)?];
         let new_shape = new_shape
             .iter()
             .chain(&[num_heads, head_size])
             .map(|x| *x)
             .collect::<Vec<_>>();
 
-        let ret = input.reshape(new_shape.clone()).unwrap();
+        let ret = input.reshape(new_shape.clone())?;
 
         if do_rotary {
-            ret
+            Ok(ret)
         } else if new_shape.len() == 5 {
-            ret.permute((0, 1, 3, 2, 4)).unwrap()
+            ret.permute((0, 1, 3, 2, 4))
         } else if new_shape.len() == 4 {
-            ret.permute((0, 2, 1, 3)).unwrap()
+            ret.permute((0, 2, 1, 3))
         } else {
             panic!("Invalid shape")
         }
     }
 
-    fn get_embed_positions(&mut self, input: &Tensor) -> Tensor {
-        self.embed_positions = self.embed_positions.to_device(input.device()).unwrap();
+    fn get_embed_positions(&mut self, input: &Tensor) -> Result<Tensor> {
+        self.embed_positions = self.embed_positions.to_device(input.device())?;
 
-        self.embed_positions
-            .repeat((input.shape().dims()[0], 1, 1))
-            .unwrap()
+        self.embed_positions.repeat((input.shape().dims()[0], 1, 1))
     }
 }
 
@@ -397,11 +411,11 @@ impl MLP {
         MLP { fc_in, fc_out }
     }
 
-    fn forward(&self, input: &Tensor) -> Tensor {
-        let input = self.fc_in.forward(&input).unwrap();
-        let input = input.gelu().unwrap();
-        let input = self.fc_out.forward(&input).unwrap();
+    fn forward(&self, input: &Tensor) -> Result<Tensor> {
+        let input = self.fc_in.forward(&input)?;
+        let input = input.gelu()?;
+        let input = self.fc_out.forward(&input)?;
 
-        input
+        Ok(input)
     }
 }
