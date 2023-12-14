@@ -350,13 +350,13 @@ impl Attention {
     ) -> Result<Tensor> {
         let inv_freq = (0..dimension)
             .step_by(2)
-            .map(|x| 1f64 / (10000f64.powf(x as f64 / dimension as f64)))
+            .map(|x| 1.0 / (10000f32.powf(x as f32 / dimension as f32)))
             .collect::<Vec<_>>();
 
-        let inv_freq = Tensor::new(inv_freq, device)?;
-        let pos_ids = Tensor::arange(0f32, num_pos as f32, device)?;
+        let pos_ids = Tensor::arange(0f32, num_pos as f32, device)?.unsqueeze(1)?;
+        let inv_freq = Tensor::new(inv_freq, device)?.unsqueeze(0)?;
 
-        let sinusoid_inp = pos_ids.broadcast_mul(&inv_freq)?;
+        let sinusoid_inp = pos_ids.matmul(&inv_freq)?;
 
         let sin = Tensor::sin(&sinusoid_inp)?;
         let cos = Tensor::cos(&sinusoid_inp)?;
