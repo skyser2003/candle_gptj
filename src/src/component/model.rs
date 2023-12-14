@@ -77,6 +77,7 @@ pub struct Attention {
     pub out: Linear,
     pub num_heads: usize,
     pub head_size: usize,
+    pub rotary_dim: usize,
     pub embed_positions: Tensor,
 }
 
@@ -165,6 +166,12 @@ impl CoreModel {
 
         let hidden_layers_vb = tf_vb.pp("h");
         let inner_size = config.n_inner.unwrap_or(4 * config.n_embd);
+        let rotary_dim = config.rotary_dim.unwrap_or(0);
+        let pos_embed_dimension = if rotary_dim == 0 {
+            config.n_embd
+        } else {
+            rotary_dim
+        };
 
         let layers = (0..config.n_layer)
             .map(|i| {
@@ -176,7 +183,8 @@ impl CoreModel {
                     config.n_head,
                     config.layer_norm_epsilon,
                     config.n_positions,
-                    config.rotary_dim.unwrap_or(config.n_embd),
+                    pos_embed_dimension,
+                    rotary_dim,
                     device,
                 );
 
@@ -210,7 +218,16 @@ impl CoreModel {
         let mut hidden_state = input_ids;
 
         for layer in &mut self.hidden_layers {
-            hidden_state = layer.forward(&hidden_state, position_ids.unwrap(), device)?;
+            hidden_state = layer.forward(
+                &hidden_state,
+                position_ids.unwrap(),
+                None,
+                None,
+                None,
+                false,
+                false,
+                device,
+            )?;
         }
 
         hidden_state = self.layernorm_final.forward(&hidden_state)?;
@@ -228,6 +245,7 @@ impl HiddenLayer {
         lm_eps: f64,
         max_pos_embeddings: usize,
         pos_embed_dimension: usize,
+        rotary_dim: usize,
         device: &Device,
     ) -> HiddenLayer {
         let layer_norm_vb = layer_vb.pp("ln_1");
@@ -249,6 +267,7 @@ impl HiddenLayer {
             head_size,
             max_pos_embeddings,
             pos_embed_dimension,
+            rotary_dim,
             device,
         );
 
@@ -265,12 +284,23 @@ impl HiddenLayer {
         &mut self,
         input: &Tensor,
         position_ids: &Tensor,
+        layer_past: Option<&[&Tensor]>,
+        attention_mask: Option<&Tensor>,
+        head_mask: Option<&Tensor>,
+        use_cache: bool,
+        output_attentions: bool,
         device: &Device,
     ) -> Result<Tensor> {
         let hidden_states = self.layer_norm.forward(&input)?;
-        let attn_output = self
-            .attention
-            .forward(&hidden_states, position_ids, device)?;
+        let attn_output = self.attention.forward(
+            &hidden_states,
+            position_ids,
+            layer_past,
+            attention_mask,
+            head_mask,
+            use_cache,
+            device,
+        )?;
         let mlp_output = self.mlp.forward(&attn_output)?;
 
         hidden_states + mlp_output
@@ -285,6 +315,7 @@ impl Attention {
         head_size: usize,
         max_pos_embeddings: usize,
         pos_embed_dimension: usize,
+        rotary_dim: usize,
         device: &Device,
     ) -> Attention {
         let q = Linear::new(
@@ -315,6 +346,7 @@ impl Attention {
             out,
             num_heads,
             head_size,
+            rotary_dim,
             embed_positions,
         }
     }
@@ -323,15 +355,19 @@ impl Attention {
         &mut self,
         hidden_states: &Tensor,
         position_ids: &Tensor,
+        layer_past: Option<&[&Tensor]>,
+        attention_mask: Option<&Tensor>,
+        head_mask: Option<&Tensor>,
+        use_cache: bool,
         device: &Device,
     ) -> Result<Tensor> {
         let q = self.q.forward(&hidden_states)?;
         let k = self.k.forward(&hidden_states)?;
         let v = self.v.forward(&hidden_states)?;
 
-        let q = Self::split_heads(&q, self.num_heads, self.head_size, true);
-        let k = Self::split_heads(&k, self.num_heads, self.head_size, true);
-        let v = Self::split_heads(&v, self.num_heads, self.head_size, false);
+        let q = Self::split_heads(&q, self.num_heads, self.head_size, true)?;
+        let k = Self::split_heads(&k, self.num_heads, self.head_size, true)?;
+        let v = Self::split_heads(&v, self.num_heads, self.head_size, false)?;
 
         let embed_positions = self.get_embed_positions(position_ids)?;
 
@@ -340,7 +376,75 @@ impl Attention {
                 .unsqueeze(D::Minus1)?
                 .repeat(&[1, 1, embed_positions.dim(D::Minus1)?])?;
 
+        let sincos = embed_positions.gather(&repeated_position_ids, 1)?;
+        let sincos_half_count = sincos.dim(D::Minus1)? / 2;
+        let sin = sincos.narrow(D::Minus1, 0, sincos_half_count)?;
+        let cos = sincos.narrow(
+            D::Minus1,
+            sincos_half_count,
+            sincos.dim(D::Minus1)? - sincos_half_count,
+        )?;
+
+        let (k, q) = if self.rotary_dim == 0 {
+            let k = Self::apply_rotary_pos_emb(&k, &sin, &cos)?;
+            let q = Self::apply_rotary_pos_emb(&q, &sin, &cos)?;
+
+            (k, q)
+        } else {
+            let k_rot = k.narrow(3, 0, self.rotary_dim)?;
+            let k_pass = k.narrow(3, self.rotary_dim, k.dim(3)? - self.rotary_dim)?;
+
+            let q_rot = q.narrow(3, 0, self.rotary_dim)?;
+            let q_pass = q.narrow(3, self.rotary_dim, q.dim(3)? - self.rotary_dim)?;
+
+            let k_rot = Self::apply_rotary_pos_emb(&k_rot, &sin, &cos)?;
+            let q_rot = Self::apply_rotary_pos_emb(&q_rot, &sin, &cos)?;
+
+            let k = Tensor::cat(&[k_rot, k_pass], D::Minus1)?;
+            let q = Tensor::cat(&[q_rot, q_pass], D::Minus1)?;
+
+            (k, q)
+        };
+
+        let k = k.permute((0, 2, 1, 3))?;
+        let q = q.permute((0, 2, 1, 3))?;
+
+        let (k, v) = if let Some(layer_past) = layer_past {
+            let past_key = layer_past[0];
+            let past_value = layer_past[1];
+
+            let k = Tensor::cat(&[past_key, &k], D::Minus2)?;
+            let v = Tensor::cat(&[past_value, &v], D::Minus2)?;
+
+            (k, v)
+        } else {
+            (k, v)
+        };
+
+        let present = if use_cache {
+            Some(k.to_dtype(hidden_states.dtype())?)
+        } else {
+            None
+        };
+
+        let attn_output = self.get_attention(&q, &k, &v, attention_mask, head_mask)?;
+
         Tensor::new(vec![1i64], device)
+    }
+
+    fn get_attention(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        attention_mask: Option<&Tensor>,
+        head_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        let query_length = query.dim(D::Minus2)?;
+        let key_length = key.dim(D::Minus2)?;
+
+        // TODO
+        Tensor::new(&[1i64], query.device())
     }
 
     fn create_sinusoidal_positions(
@@ -394,6 +498,40 @@ impl Attention {
         self.embed_positions = self.embed_positions.to_device(input.device())?;
 
         self.embed_positions.repeat((input.shape().dims()[0], 1, 1))
+    }
+
+    fn apply_rotary_pos_emb(tensor: &Tensor, sin: &Tensor, cos: &Tensor) -> Result<Tensor> {
+        let repeat_dim = 2;
+        let repeat_count = 3;
+
+        let sin = sin.unsqueeze(repeat_dim)?;
+        let cos = cos.unsqueeze(repeat_dim)?;
+
+        let mut dim_sin = sin.dims().to_vec();
+        let mut dim_cos = cos.dims().to_vec();
+
+        dim_sin[repeat_dim] = repeat_count;
+        dim_cos[repeat_dim] = repeat_count;
+
+        let sin = sin.broadcast_as(dim_sin)?;
+        let cos = cos.broadcast_as(dim_cos)?;
+
+        (tensor * cos)? + (Self::rotate_every_two(tensor)? * sin)
+    }
+
+    fn rotate_every_two(tensor: &Tensor) -> Result<Tensor> {
+        let rotate_dim = 3;
+        let dim_count = tensor.dim(rotate_dim)? as u32;
+
+        let zero_start_indices = Tensor::arange_step(0, dim_count, 2, tensor.device())?;
+        let one_start_indices = Tensor::arange_step(1, dim_count, 2, tensor.device())?;
+
+        let x_zero = tensor.index_select(&zero_start_indices, rotate_dim)?;
+        let x_one = tensor.index_select(&one_start_indices, rotate_dim)?;
+
+        let x = Tensor::stack(&[x_one.neg()?, x_zero], D::Minus1)?;
+
+        x.flatten(D::Minus2, D::Minus1)
     }
 }
 
