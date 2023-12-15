@@ -1,7 +1,7 @@
 use std::{fs::File, path::PathBuf};
 
 use candle_core::{Device, Result, Tensor, D};
-use candle_nn::{Embedding, LayerNorm, Linear, Module, VarBuilder};
+use candle_nn::{ops::softmax, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
 use tokenizers::Tokenizer;
@@ -78,7 +78,9 @@ pub struct Attention {
     pub num_heads: usize,
     pub head_size: usize,
     pub rotary_dim: usize,
+    pub bias: Tensor,
     pub embed_positions: Tensor,
+    pub attn_dropout: Dropout,
 }
 
 pub struct MLP {
@@ -185,6 +187,7 @@ impl CoreModel {
                     config.n_positions,
                     pos_embed_dimension,
                     rotary_dim,
+                    config.attn_pdrop,
                     device,
                 );
 
@@ -246,6 +249,7 @@ impl HiddenLayer {
         max_pos_embeddings: usize,
         pos_embed_dimension: usize,
         rotary_dim: usize,
+        attn_pdrop: f32,
         device: &Device,
     ) -> HiddenLayer {
         let layer_norm_vb = layer_vb.pp("ln_1");
@@ -268,6 +272,7 @@ impl HiddenLayer {
             max_pos_embeddings,
             pos_embed_dimension,
             rotary_dim,
+            attn_pdrop,
             device,
         );
 
@@ -316,6 +321,7 @@ impl Attention {
         max_pos_embeddings: usize,
         pos_embed_dimension: usize,
         rotary_dim: usize,
+        attn_pdrop: f32,
         device: &Device,
     ) -> Attention {
         let q = Linear::new(
@@ -335,9 +341,26 @@ impl Attention {
             None,
         );
 
+        let mut bias_vec = vec![0u8; max_pos_embeddings * max_pos_embeddings];
+
+        for i in 0..max_pos_embeddings {
+            for j in 0..max_pos_embeddings {
+                let is_tril = j <= i;
+
+                if is_tril {
+                    bias_vec[i + j * max_pos_embeddings] = 1;
+                }
+            }
+        }
+
+        let bias =
+            Tensor::from_vec(bias_vec, &[max_pos_embeddings, max_pos_embeddings], device).unwrap();
+
         let embed_positions =
             Self::create_sinusoidal_positions(max_pos_embeddings, pos_embed_dimension, device)
                 .unwrap();
+
+        let attn_dropout = Dropout::new(attn_pdrop);
 
         Attention {
             q,
@@ -347,7 +370,9 @@ impl Attention {
             num_heads,
             head_size,
             rotary_dim,
+            bias,
             embed_positions,
+            attn_dropout,
         }
     }
 
@@ -439,12 +464,37 @@ impl Attention {
         value: &Tensor,
         attention_mask: Option<&Tensor>,
         head_mask: Option<&Tensor>,
-    ) -> Result<Tensor> {
+    ) -> Result<(Tensor, Tensor)> {
         let query_length = query.dim(D::Minus2)?;
         let key_length = key.dim(D::Minus2)?;
 
-        // TODO
-        Tensor::new(&[1i64], query.device())
+        let causal_mask = self
+            .bias
+            .narrow(2, key_length - query_length, key_length)?
+            .narrow(3, 0, key_length)?;
+
+        let query = query.to_dtype(candle_core::DType::F32)?;
+        let key = key.to_dtype(candle_core::DType::F32)?;
+
+        let attn_weights = query.matmul(&key.transpose(D::Minus1, D::Minus2)?)?;
+        let mask_value = Tensor::new(&[f32::MIN], attn_weights.device())?;
+        let mut attn_weights = causal_mask.where_cond(&attn_weights, &mask_value)?;
+
+        if let Some(attention_mask) = attention_mask {
+            attn_weights = (attn_weights + attention_mask)?;
+        }
+
+        let attn_weights = softmax(&attn_weights, D::Minus1)?;
+        let attn_weights = attn_weights.to_dtype(value.dtype())?;
+        let mut attn_weights = self.attn_dropout.forward(&attn_weights, false)?;
+
+        if let Some(head_mask) = head_mask {
+            attn_weights = (attn_weights * head_mask)?
+        }
+
+        let attn_output = attn_weights.matmul(&value)?;
+
+        Ok((attn_output, attn_weights))
     }
 
     fn create_sinusoidal_positions(
