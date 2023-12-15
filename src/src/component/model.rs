@@ -81,6 +81,7 @@ pub struct Attention {
     pub bias: Tensor,
     pub embed_positions: Tensor,
     pub attn_dropout: Dropout,
+    pub resid_dropout: Dropout,
 }
 
 pub struct MLP {
@@ -188,6 +189,7 @@ impl CoreModel {
                     pos_embed_dimension,
                     rotary_dim,
                     config.attn_pdrop,
+                    config.resid_pdrop,
                     device,
                 );
 
@@ -250,6 +252,7 @@ impl HiddenLayer {
         pos_embed_dimension: usize,
         rotary_dim: usize,
         attn_pdrop: f32,
+        resid_pdrop: f32,
         device: &Device,
     ) -> HiddenLayer {
         let layer_norm_vb = layer_vb.pp("ln_1");
@@ -273,6 +276,7 @@ impl HiddenLayer {
             pos_embed_dimension,
             rotary_dim,
             attn_pdrop,
+            resid_pdrop,
             device,
         );
 
@@ -287,7 +291,7 @@ impl HiddenLayer {
 
     fn forward(
         &mut self,
-        input: &Tensor,
+        hidden_states: &Tensor,
         position_ids: &Tensor,
         layer_past: Option<&[&Tensor]>,
         attention_mask: Option<&Tensor>,
@@ -295,20 +299,28 @@ impl HiddenLayer {
         use_cache: bool,
         output_attentions: bool,
         device: &Device,
-    ) -> Result<Tensor> {
-        let hidden_states = self.layer_norm.forward(&input)?;
-        let attn_output = self.attention.forward(
+    ) -> Result<(Tensor, Option<Tensor>, Option<Tensor>)> {
+        let residual = hidden_states;
+        let hidden_states = self.layer_norm.forward(&hidden_states)?;
+        let (attn_output, present, attn_weights) = self.attention.forward(
             &hidden_states,
             position_ids,
             layer_past,
             attention_mask,
             head_mask,
             use_cache,
+            output_attentions,
             device,
         )?;
-        let mlp_output = self.mlp.forward(&attn_output)?;
 
-        hidden_states + mlp_output
+        let feed_forward_hidden_states = self.mlp.forward(&attn_output)?;
+        let hidden_states = (attn_output + feed_forward_hidden_states + residual)?;
+
+        if use_cache {
+            Ok((hidden_states, present, attn_weights))
+        } else {
+            Ok((hidden_states, None, attn_weights))
+        }
     }
 }
 
@@ -322,6 +334,7 @@ impl Attention {
         pos_embed_dimension: usize,
         rotary_dim: usize,
         attn_pdrop: f32,
+        resid_pdrop: f32,
         device: &Device,
     ) -> Attention {
         let q = Linear::new(
@@ -361,6 +374,7 @@ impl Attention {
                 .unwrap();
 
         let attn_dropout = Dropout::new(attn_pdrop);
+        let resid_dropout = Dropout::new(resid_pdrop);
 
         Attention {
             q,
@@ -373,6 +387,7 @@ impl Attention {
             bias,
             embed_positions,
             attn_dropout,
+            resid_dropout,
         }
     }
 
@@ -384,8 +399,9 @@ impl Attention {
         attention_mask: Option<&Tensor>,
         head_mask: Option<&Tensor>,
         use_cache: bool,
+        output_attentions: bool,
         device: &Device,
-    ) -> Result<Tensor> {
+    ) -> Result<(Tensor, Option<Tensor>, Option<Tensor>)> {
         let q = self.q.forward(&hidden_states)?;
         let k = self.k.forward(&hidden_states)?;
         let v = self.v.forward(&hidden_states)?;
@@ -452,9 +468,38 @@ impl Attention {
             None
         };
 
-        let attn_output = self.get_attention(&q, &k, &v, attention_mask, head_mask)?;
+        let (attn_output, attn_weights) =
+            self.get_attention(&q, &k, &v, attention_mask, head_mask)?;
 
-        Tensor::new(vec![1i64], device)
+        let attn_output = Self::merge_heads(&attn_output, self.num_heads, self.head_size)?;
+        let attn_output = self.out.forward(&attn_output)?;
+        let attn_output = self.resid_dropout.forward(&attn_output, false)?;
+
+        if output_attentions {
+            Ok((attn_output, present, Some(attn_weights)))
+        } else {
+            Ok((attn_output, present, None))
+        }
+    }
+
+    fn merge_heads(attn_output: &Tensor, num_heads: usize, head_size: usize) -> Result<Tensor> {
+        let num_dims = attn_output.dims().len();
+
+        let merged = if num_dims == 5 {
+            attn_output.permute((0, 1, 3, 2, 4))?.contiguous()?
+        } else if num_dims == 4 {
+            attn_output.permute((0, 2, 1, 3))?.contiguous()?
+        } else {
+            panic!(
+                "Input tensor rank should be one of [4, 5], but is: {}",
+                num_dims
+            )
+        };
+
+        let mut new_shape = attn_output.dims()[0..attn_output.dims().len() - 2].to_vec();
+        new_shape.push(num_heads * head_size);
+
+        merged.reshape(new_shape)
     }
 
     fn get_attention(
