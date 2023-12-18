@@ -325,7 +325,12 @@ impl CoreModel {
             input_embeds.unwrap()
         };
 
-        let hidden_states = input_embeds;
+        let mut hidden_states = input_embeds;
+
+        if let Some(token_type_ids) = token_type_ids {
+            let token_type_embeds = self.word_token_embedding.forward(&token_type_ids)?;
+            hidden_states = (hidden_states + token_type_embeds)?;
+        }
 
         let input_ids = input_ids.unwrap();
 
