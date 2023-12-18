@@ -1,6 +1,6 @@
-use std::{fs::File, path::PathBuf};
+use std::{collections::HashMap, fs::File, ops::Mul, path::PathBuf};
 
-use candle_core::{Device, Result, Tensor, D};
+use candle_core::{DType, Device, Result, Tensor, D};
 use candle_nn::{ops::softmax, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
@@ -19,7 +19,7 @@ pub struct ModelWrapper {
     pub model: CoreModel,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug, Clone)]
 pub struct Config {
     pub _name_or_path: Option<String>,
     pub activation_function: String,
@@ -49,7 +49,7 @@ pub struct Config {
     pub vocab_size: usize,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, Debug, Clone)]
 pub struct QuantizationConfig {
     pub bits: i32,
     pub group_size: i32,
@@ -59,6 +59,9 @@ pub struct QuantizationConfig {
 }
 
 pub struct CoreModel {
+    pub config: Config,
+    pub dtype: DType,
+    pub dtype_min: f32,
     pub word_token_embedding: Embedding,
     pub hidden_layers: Vec<HiddenLayer>,
     pub layernorm_final: LayerNorm,
@@ -203,7 +206,28 @@ impl CoreModel {
             config.layer_norm_epsilon,
         );
 
+        let dtype_map = vec![
+            ("float16", (DType::F16, -65504.0)),
+            ("float32", (DType::F32, f32::MIN)),
+            ("bfloat16", (DType::BF16, -3.38e38)),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+        let torch_dtype = config.torch_dtype.unwrap_or("".to_string());
+
+        let torch_dtype = if dtype_map.contains_key(torch_dtype.as_str()) {
+            torch_dtype
+        } else {
+            "float32".to_string()
+        };
+
+        let (dtype, dtype_min) = *dtype_map.get(torch_dtype.as_str()).unwrap();
+
         Self {
+            config: config.clone(),
+            dtype,
+            dtype_min,
             word_token_embedding,
             hidden_layers: layers,
             layernorm_final,
@@ -212,12 +236,100 @@ impl CoreModel {
 
     fn forward(
         &mut self,
-        input_ids: &Vec<i64>,
-        position_ids: Option<&Tensor>,
+        input_ids: Option<&Tensor>,
+        past_key_values: Option<Vec<Vec<Option<Tensor>>>>,
+        attention_mask: Option<&Tensor>,
+        token_type_ids: Option<&Tensor>,
+        position_ids: Option<Tensor>,
+        head_mask: Option<&Tensor>,
+        input_embeds: Option<Tensor>,
+        use_cache: Option<bool>,
+        output_attentions: bool,
+        output_hidden_states: bool,
+        return_dict: bool,
         device: &Device,
     ) -> Result<Tensor> {
-        let input_ids = Tensor::new(input_ids.clone(), device)?;
+        let use_cache = use_cache.unwrap_or(self.config.use_cache);
 
+        let (input_shape, batch_size, device) = if input_ids.is_some() && input_embeds.is_some() {
+            panic!("You cannot specify both input_ids and inputs_embeds at the same time")
+        } else if let Some(input_ids) = input_ids {
+            // TODO
+            // self.warn_if_padding_and_no_attention_mask(&input_ids, attention_mask);
+
+            let input_shape = input_ids.shape();
+            let input_ids = input_ids.reshape(((), input_ids.dim(D::Minus1)?))?;
+            let batch_size = input_ids.dim(0)?;
+            let device = input_ids.device();
+
+            (input_shape, batch_size, device)
+        } else if let Some(input_embeds) = input_embeds {
+            let input_shape = input_embeds.shape();
+            let batch_size = input_embeds.dim(0)?;
+            let device = input_embeds.device();
+
+            (input_shape, batch_size, device)
+        } else {
+            panic!("You have to specify either input_ids or inputs_embeds")
+        };
+
+        let token_type_ids = if let Some(token_type_ids) = token_type_ids {
+            Some(token_type_ids.reshape(((), token_type_ids.dim(D::Minus1)?))?)
+        } else {
+            None
+        };
+
+        let (past_length, past_key_values) = if past_key_values.is_none() {
+            let past_length = 0usize;
+            let past_key_values: Vec<Vec<Option<Tensor>>> = vec![vec![None; self.config.n_layer]];
+
+            (past_length, past_key_values)
+        } else {
+            let past_key_values = past_key_values.unwrap();
+            let past_length = past_key_values[0][0].unwrap().dim(D::Minus2)?;
+
+            (past_length, past_key_values)
+        };
+
+        let position_ids = if position_ids.is_none() {
+            let position_ids = Tensor::arange(
+                past_length as i64,
+                *input_shape.dims().last().unwrap() as i64,
+                device,
+            )?;
+            position_ids.unsqueeze(0)?
+        } else {
+            position_ids.unwrap()
+        };
+
+        let attention_mask = if let Some(attention_mask) = attention_mask {
+            if batch_size <= 0 {
+                panic!("Batch size has to be defined and > 0");
+            }
+
+            let attention_mask = attention_mask.reshape((batch_size, ()))?;
+            let attention_mask = attention_mask.unsqueeze(1)?.unsqueeze(1)?;
+            let attention_mask = attention_mask.to_dtype(self.dtype)?;
+            let attention_mask = ((1.0 - attention_mask)? * self.dtype_min as f64)?;
+
+            Some(attention_mask)
+        } else {
+            None
+        };
+
+        let head_mask = Self::get_head_mask(head_mask, self.config.n_layer, false, self.dtype);
+
+        let input_embeds = if input_embeds.is_none() {
+            self.word_token_embedding.forward(&input_ids.unwrap())?
+        } else {
+            input_embeds.unwrap()
+        };
+
+        let hidden_states = input_embeds;
+
+        let input_ids = input_ids.unwrap();
+
+        let input_ids = Tensor::new(input_ids.clone(), device)?;
         let input_ids = self.word_token_embedding.forward(&input_ids)?;
 
         let mut hidden_state = input_ids;
@@ -238,6 +350,59 @@ impl CoreModel {
         hidden_state = self.layernorm_final.forward(&hidden_state)?;
 
         Ok(hidden_state)
+    }
+
+    fn get_head_mask(
+        head_mask: Option<&Tensor>,
+        num_hidden_layers: usize,
+        is_attention_chunkced: bool,
+        dtype: DType,
+    ) -> Option<Tensor> {
+        if let Some(head_mask) = head_mask {
+            let mut head_mask =
+                Self::convert_head_mask_to_5d(head_mask, num_hidden_layers, dtype).unwrap();
+
+            if is_attention_chunkced {
+                head_mask = head_mask.unsqueeze(D::Minus1).unwrap();
+            }
+
+            Some(head_mask)
+        } else {
+            None
+        }
+    }
+
+    fn convert_head_mask_to_5d(
+        head_mask: &Tensor,
+        num_hidden_layers: usize,
+        dtype: DType,
+    ) -> Result<Tensor> {
+        let dim = head_mask.rank();
+
+        let head_mask = if dim == 1 {
+            &head_mask
+                .unsqueeze(0)?
+                .unsqueeze(0)?
+                .unsqueeze(D::Minus1)?
+                .unsqueeze(D::Minus1)?
+                .expand((num_hidden_layers,))?
+        } else if dim == 2 {
+            &head_mask
+                .unsqueeze(1)?
+                .unsqueeze(D::Minus1)?
+                .unsqueeze(D::Minus1)?
+        } else {
+            head_mask
+        };
+
+        assert_eq!(
+            head_mask.rank(),
+            5,
+            "Num dimension of 'head_mask' must be 5, is {}",
+            head_mask.rank()
+        );
+
+        head_mask.to_dtype(dtype)
     }
 }
 
