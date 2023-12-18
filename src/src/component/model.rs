@@ -65,6 +65,7 @@ pub struct CoreModel {
     pub word_token_embedding: Embedding,
     pub hidden_layers: Vec<HiddenLayer>,
     pub layernorm_final: LayerNorm,
+    pub drop: Dropout,
 }
 
 pub struct HiddenLayer {
@@ -206,6 +207,8 @@ impl CoreModel {
             config.layer_norm_epsilon,
         );
 
+        let drop = Dropout::new(config.embd_pdrop);
+
         let dtype_map = vec![
             ("float16", (DType::F16, -65504.0)),
             ("float32", (DType::F32, f32::MIN)),
@@ -231,6 +234,7 @@ impl CoreModel {
             word_token_embedding,
             hidden_layers: layers,
             layernorm_final,
+            drop,
         }
     }
 
@@ -331,6 +335,8 @@ impl CoreModel {
             let token_type_embeds = self.word_token_embedding.forward(&token_type_ids)?;
             hidden_states = (hidden_states + token_type_embeds)?;
         }
+
+        hidden_states = self.drop.forward(&hidden_states, false)?;
 
         let input_ids = input_ids.unwrap();
 
