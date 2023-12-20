@@ -338,6 +338,24 @@ impl CoreModel {
 
         hidden_states = self.drop.forward(&hidden_states, false)?;
 
+        let mut output_shape = Vec::new();
+        output_shape.push(-1);
+
+        for i in input_shape.dims().iter().skip(1) {
+            output_shape.push(*i as i32);
+        }
+
+        output_shape.push(hidden_states.dim(D::Minus1)? as i32);
+
+        let presents = Vec::new();
+        let all_self_attentions = Vec::new();
+        let all_hidden_states = Vec::new();
+
+        for i in 0..self.hidden_layers.len() {
+            let layer = &self.hidden_layers[i];
+            let layer_past = &past_key_values[i];
+        }
+
         let input_ids = input_ids.unwrap();
 
         let input_ids = Tensor::new(input_ids.clone(), device)?;
