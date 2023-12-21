@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs::File, ops::Mul, path::PathBuf};
 
-use candle_core::{DType, Device, Result, Tensor, D};
+use candle_core::{DType, Device, IntDType, Result, Shape, Tensor, D};
 use candle_nn::{ops::softmax, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
@@ -66,6 +66,7 @@ pub struct CoreModel {
     pub hidden_layers: Vec<HiddenLayer>,
     pub layernorm_final: LayerNorm,
     pub drop: Dropout,
+    pub is_parallel: bool,
 }
 
 pub struct HiddenLayer {
@@ -217,7 +218,7 @@ impl CoreModel {
         .into_iter()
         .collect::<HashMap<_, _>>();
 
-        let torch_dtype = config.torch_dtype.unwrap_or("".to_string());
+        let torch_dtype = config.torch_dtype.clone().unwrap_or("".to_string());
 
         let torch_dtype = if dtype_map.contains_key(torch_dtype.as_str()) {
             torch_dtype
@@ -235,6 +236,7 @@ impl CoreModel {
             hidden_layers: layers,
             layernorm_final,
             drop,
+            is_parallel: false,
         }
     }
 
@@ -261,16 +263,16 @@ impl CoreModel {
             // TODO
             // self.warn_if_padding_and_no_attention_mask(&input_ids, attention_mask);
 
-            let input_shape = input_ids.shape();
+            let input_shape = input_ids.shape().clone();
             let input_ids = input_ids.reshape(((), input_ids.dim(D::Minus1)?))?;
             let batch_size = input_ids.dim(0)?;
-            let device = input_ids.device();
+            let device = input_ids.device().clone();
 
             (input_shape, batch_size, device)
-        } else if let Some(input_embeds) = input_embeds {
-            let input_shape = input_embeds.shape();
+        } else if let Some(input_embeds) = &input_embeds {
+            let input_shape = input_embeds.shape().clone();
             let batch_size = input_embeds.dim(0)?;
-            let device = input_embeds.device();
+            let device = input_embeds.device().clone();
 
             (input_shape, batch_size, device)
         } else {
@@ -285,12 +287,12 @@ impl CoreModel {
 
         let (past_length, past_key_values) = if past_key_values.is_none() {
             let past_length = 0usize;
-            let past_key_values: Vec<Vec<Option<Tensor>>> = vec![vec![None; self.config.n_layer]];
+            let past_key_values: Vec<Vec<Option<Tensor>>> = vec![vec![]; self.config.n_layer];
 
             (past_length, past_key_values)
         } else {
             let past_key_values = past_key_values.unwrap();
-            let past_length = past_key_values[0][0].unwrap().dim(D::Minus2)?;
+            let past_length = past_key_values[0][0].as_ref().unwrap().dim(D::Minus2)?;
 
             (past_length, past_key_values)
         };
@@ -299,7 +301,7 @@ impl CoreModel {
             let position_ids = Tensor::arange(
                 past_length as i64,
                 *input_shape.dims().last().unwrap() as i64,
-                device,
+                &device,
             )?;
             position_ids.unsqueeze(0)?
         } else {
@@ -338,47 +340,67 @@ impl CoreModel {
 
         hidden_states = self.drop.forward(&hidden_states, false)?;
 
-        let mut output_shape = Vec::new();
-        output_shape.push(-1);
+        let mut partial_output_shape = Vec::new();
 
         for i in input_shape.dims().iter().skip(1) {
-            output_shape.push(*i as i32);
+            partial_output_shape.push(*i);
         }
 
-        output_shape.push(hidden_states.dim(D::Minus1)? as i32);
+        partial_output_shape.push(hidden_states.dim(D::Minus1)?);
 
-        let presents = Vec::new();
-        let all_self_attentions = Vec::new();
-        let all_hidden_states = Vec::new();
+        let mut presents = Vec::new();
+        let mut all_self_attentions = Vec::new();
+        let mut all_hidden_states = Vec::new();
 
         for i in 0..self.hidden_layers.len() {
-            let layer = &self.hidden_layers[i];
+            let layer = &mut self.hidden_layers[i];
             let layer_past = &past_key_values[i];
-        }
 
-        let input_ids = input_ids.unwrap();
+            if self.is_parallel {
+                // TODO
+            }
 
-        let input_ids = Tensor::new(input_ids.clone(), device)?;
-        let input_ids = self.word_token_embedding.forward(&input_ids)?;
+            if output_hidden_states {
+                all_hidden_states.push(hidden_states.clone());
+            }
 
-        let mut hidden_state = input_ids;
-
-        for layer in &mut self.hidden_layers {
-            hidden_state = layer.forward(
-                &hidden_state,
-                position_ids.unwrap(),
-                None,
-                None,
-                None,
-                false,
-                false,
-                device,
+            let (local_hidden_states, present, attn_weights) = layer.forward(
+                &hidden_states,
+                &position_ids,
+                layer_past,
+                &attention_mask,
+                &head_mask,
+                use_cache,
+                output_attentions,
+                &device,
             )?;
+
+            hidden_states = local_hidden_states;
+
+            if use_cache {
+                presents.push(present.unwrap());
+            }
+
+            if output_attentions {
+                all_self_attentions.push(attn_weights.unwrap());
+            }
+
+            if self.is_parallel {
+                // TODO
+            }
         }
 
-        hidden_state = self.layernorm_final.forward(&hidden_state)?;
+        hidden_states = self.layernorm_final.forward(&hidden_states)?;
 
-        Ok(hidden_state)
+        let output_shape_0 = hidden_states.dims().iter().product::<usize>()
+            / partial_output_shape.iter().product::<usize>();
+
+        let mut output_shape = vec![output_shape_0];
+        output_shape.append(&mut partial_output_shape);
+
+        hidden_states = hidden_states.reshape(output_shape)?;
+
+        Ok(hidden_states)
     }
 
     fn get_head_mask(
@@ -409,19 +431,19 @@ impl CoreModel {
         let dim = head_mask.rank();
 
         let head_mask = if dim == 1 {
-            &head_mask
+            head_mask
                 .unsqueeze(0)?
                 .unsqueeze(0)?
                 .unsqueeze(D::Minus1)?
                 .unsqueeze(D::Minus1)?
                 .expand((num_hidden_layers,))?
         } else if dim == 2 {
-            &head_mask
+            head_mask
                 .unsqueeze(1)?
                 .unsqueeze(D::Minus1)?
                 .unsqueeze(D::Minus1)?
         } else {
-            head_mask
+            head_mask.clone()
         };
 
         assert_eq!(
@@ -487,9 +509,9 @@ impl HiddenLayer {
         &mut self,
         hidden_states: &Tensor,
         position_ids: &Tensor,
-        layer_past: Option<&[&Tensor]>,
-        attention_mask: Option<&Tensor>,
-        head_mask: Option<&Tensor>,
+        layer_past: &[Option<Tensor>],
+        attention_mask: &Option<Tensor>,
+        head_mask: &Option<Tensor>,
         use_cache: bool,
         output_attentions: bool,
         device: &Device,
@@ -589,9 +611,9 @@ impl Attention {
         &mut self,
         hidden_states: &Tensor,
         position_ids: &Tensor,
-        layer_past: Option<&[&Tensor]>,
-        attention_mask: Option<&Tensor>,
-        head_mask: Option<&Tensor>,
+        layer_past: &[Option<Tensor>],
+        attention_mask: &Option<Tensor>,
+        head_mask: &Option<Tensor>,
         use_cache: bool,
         output_attentions: bool,
         device: &Device,
@@ -644,9 +666,9 @@ impl Attention {
         let k = k.permute((0, 2, 1, 3))?;
         let q = q.permute((0, 2, 1, 3))?;
 
-        let (k, v) = if let Some(layer_past) = layer_past {
-            let past_key = layer_past[0];
-            let past_value = layer_past[1];
+        let (k, v) = if layer_past.len() != 0 {
+            let past_key = layer_past.get(0).unwrap().as_ref().unwrap();
+            let past_value = layer_past.get(1).unwrap().as_ref().unwrap();
 
             let k = Tensor::cat(&[past_key, &k], D::Minus2)?;
             let v = Tensor::cat(&[past_value, &v], D::Minus2)?;
@@ -701,8 +723,8 @@ impl Attention {
         query: &Tensor,
         key: &Tensor,
         value: &Tensor,
-        attention_mask: Option<&Tensor>,
-        head_mask: Option<&Tensor>,
+        attention_mask: &Option<Tensor>,
+        head_mask: &Option<Tensor>,
     ) -> Result<(Tensor, Tensor)> {
         let query_length = query.dim(D::Minus2)?;
         let key_length = key.dim(D::Minus2)?;
