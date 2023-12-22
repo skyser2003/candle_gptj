@@ -131,6 +131,41 @@ impl ModelLoader {
         buffer
     }
 
+    pub fn inference(&mut self, inputs: &[&str]) -> Result<Vec<String>> {
+        let encodings = self.tokenizer.encode_batch(inputs.to_vec(), true).unwrap();
+        let tokens = encodings
+            .iter()
+            .map(|enc| enc.get_ids())
+            .collect::<Vec<_>>();
+
+        let input_ids = Tensor::new(tokens, &self.model.device)?;
+
+        let outputs = self.model.model.forward(
+            Some(&input_ids),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(false),
+            false,
+            false,
+            false,
+            &self.model.device,
+        )?;
+
+        let output_ids = outputs.to_vec2::<u32>()?;
+        let output_ids = output_ids
+            .iter()
+            .map(|output| output.as_slice())
+            .collect::<Vec<_>>();
+
+        let outputs = self.tokenizer.decode_batch(&output_ids, true).unwrap();
+
+        Ok(outputs)
+    }
+
     pub fn get_tensors(&self) -> SafeTensors {
         self.model.tensors()
     }

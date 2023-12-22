@@ -53,7 +53,10 @@ async fn main() {
         println!("Using device '{}'", args.device.unwrap());
     }
 
-    let loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
+    let mut loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
+    let outputs = loader.inference(&["Hello World~"]).unwrap();
+
+    println!("Outputs: {:?}", outputs);
 
     println!("Tensor keys: {:?}", loader.get_tensors().names());
     println!(
