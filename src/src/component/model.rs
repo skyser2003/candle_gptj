@@ -612,8 +612,12 @@ impl Attention {
             }
         }
 
-        let bias =
-            Tensor::from_vec(bias_vec, &[max_pos_embeddings, max_pos_embeddings], device).unwrap();
+        let bias = Tensor::from_vec(
+            bias_vec,
+            &[1, 1, max_pos_embeddings, max_pos_embeddings],
+            device,
+        )
+        .unwrap();
 
         let embed_positions =
             Self::create_sinusoidal_positions(max_pos_embeddings, pos_embed_dimension, device)
@@ -707,6 +711,9 @@ impl Attention {
         } else {
             (k, v)
         };
+
+        let k = k.contiguous()?;
+        let q = q.contiguous()?;
 
         let present = if use_cache {
             Some(k.to_dtype(hidden_states.dtype())?)
