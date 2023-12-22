@@ -763,19 +763,23 @@ impl Attention {
         attention_mask: &Option<Tensor>,
         head_mask: &Option<Tensor>,
     ) -> Result<(Tensor, Tensor)> {
+        let query = query.to_dtype(candle_core::DType::F32)?;
+        let key = key.to_dtype(candle_core::DType::F32)?;
+
+        let attn_weights = query.matmul(&key.transpose(D::Minus1, D::Minus2)?)?;
+
         let query_length = query.dim(D::Minus2)?;
         let key_length = key.dim(D::Minus2)?;
 
         let causal_mask = self
             .bias
             .narrow(2, key_length - query_length, key_length)?
-            .narrow(3, 0, key_length)?;
+            .narrow(3, 0, key_length)?
+            .broadcast_as(attn_weights.shape())?;
 
-        let query = query.to_dtype(candle_core::DType::F32)?;
-        let key = key.to_dtype(candle_core::DType::F32)?;
+        let mask_value =
+            Tensor::new(&[f32::MIN], attn_weights.device())?.broadcast_as(attn_weights.shape())?;
 
-        let attn_weights = query.matmul(&key.transpose(D::Minus1, D::Minus2)?)?;
-        let mask_value = Tensor::new(&[f32::MIN], attn_weights.device())?;
         let mut attn_weights = causal_mask.where_cond(&attn_weights, &mask_value)?;
 
         if let Some(attention_mask) = attention_mask {
