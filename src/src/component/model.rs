@@ -1,6 +1,6 @@
-use std::{collections::HashMap, fs::File, ops::Mul, path::PathBuf};
+use std::{collections::HashMap, fs::File, path::PathBuf};
 
-use candle_core::{DType, Device, IntDType, Result, Shape, Tensor, D};
+use candle_core::{DType, Device, Result, Tensor, D};
 use candle_nn::{ops::softmax, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder};
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
@@ -189,13 +189,26 @@ impl ModelWrapper {
 
 impl CoreModel {
     fn new(model_filename: &PathBuf, device: &Device, config: &Config) -> CoreModel {
+        let dtype_map = vec![
+            ("float16", (DType::F16, -65504.0)),
+            ("float32", (DType::F32, f32::MIN)),
+            ("bfloat16", (DType::BF16, -3.38e38)),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+        let torch_dtype = config.torch_dtype.clone().unwrap_or("".to_string());
+
+        let torch_dtype = if dtype_map.contains_key(torch_dtype.as_str()) {
+            torch_dtype
+        } else {
+            "float32".to_string()
+        };
+
+        let (dtype, dtype_min) = *dtype_map.get(torch_dtype.as_str()).unwrap();
+
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                &[model_filename.clone()],
-                candle_core::DType::F16,
-                &device,
-            )
-            .unwrap()
+            VarBuilder::from_mmaped_safetensors(&[model_filename.clone()], dtype, &device).unwrap()
         };
 
         let tf_vb = vb.pp("transformer");
@@ -244,24 +257,6 @@ impl CoreModel {
         );
 
         let drop = Dropout::new(config.embd_pdrop);
-
-        let dtype_map = vec![
-            ("float16", (DType::F16, -65504.0)),
-            ("float32", (DType::F32, f32::MIN)),
-            ("bfloat16", (DType::BF16, -3.38e38)),
-        ]
-        .into_iter()
-        .collect::<HashMap<_, _>>();
-
-        let torch_dtype = config.torch_dtype.clone().unwrap_or("".to_string());
-
-        let torch_dtype = if dtype_map.contains_key(torch_dtype.as_str()) {
-            torch_dtype
-        } else {
-            "float32".to_string()
-        };
-
-        let (dtype, dtype_min) = *dtype_map.get(torch_dtype.as_str()).unwrap();
 
         Self {
             config: config.clone(),
@@ -663,10 +658,10 @@ impl Attention {
 
         let embed_positions = self.get_embed_positions(position_ids)?;
 
-        let repeated_position_ids =
-            position_ids
-                .unsqueeze(D::Minus1)?
-                .repeat(&[1, 1, embed_positions.dim(D::Minus1)?])?;
+        let repeated_position_ids = position_ids
+            .unsqueeze(D::Minus1)?
+            .repeat(&[1, 1, embed_positions.dim(D::Minus1)?])?
+            .contiguous()?;
 
         let sincos = embed_positions.gather(&repeated_position_ids, 1)?;
         let sincos_half_count = sincos.dim(D::Minus1)? / 2;
@@ -683,10 +678,10 @@ impl Attention {
 
             (k, q)
         } else {
-            let k_rot = k.narrow(3, 0, self.rotary_dim)?;
+            let k_rot = k.narrow(3, 0, self.rotary_dim)?.contiguous()?;
             let k_pass = k.narrow(3, self.rotary_dim, k.dim(3)? - self.rotary_dim)?;
 
-            let q_rot = q.narrow(3, 0, self.rotary_dim)?;
+            let q_rot = q.narrow(3, 0, self.rotary_dim)?.contiguous()?;
             let q_pass = q.narrow(3, self.rotary_dim, q.dim(3)? - self.rotary_dim)?;
 
             let k_rot = Self::apply_rotary_pos_emb(&k_rot, &sin, &cos)?;
@@ -820,20 +815,23 @@ impl Attention {
         head_size: usize,
         do_rotary: bool,
     ) -> Result<Tensor> {
-        let new_shape = &input.dims()[0..input.dim(D::Minus1)?];
+        let new_shape = &input.dims()[0..input.dims().len() - 1];
+
         let new_shape = new_shape
             .iter()
             .chain(&[num_heads, head_size])
             .map(|x| *x)
             .collect::<Vec<_>>();
 
-        let ret = input.reshape(new_shape.clone())?;
+        let new_shape_dim = new_shape.len();
+
+        let ret = input.reshape(new_shape)?;
 
         if do_rotary {
             Ok(ret)
-        } else if new_shape.len() == 5 {
+        } else if new_shape_dim == 5 {
             ret.permute((0, 1, 3, 2, 4))
-        } else if new_shape.len() == 4 {
+        } else if new_shape_dim == 4 {
             ret.permute((0, 2, 1, 3))
         } else {
             panic!("Invalid shape")
@@ -847,22 +845,32 @@ impl Attention {
     }
 
     fn apply_rotary_pos_emb(tensor: &Tensor, sin: &Tensor, cos: &Tensor) -> Result<Tensor> {
-        let repeat_dim = 2;
-        let repeat_count = 3;
+        let unsqueeze_dim = 2;
+        let repeat_count = 2;
+        let repeat_dim = 3;
 
-        let sin = sin.unsqueeze(repeat_dim)?;
-        let cos = cos.unsqueeze(repeat_dim)?;
+        let sin = sin.unsqueeze(unsqueeze_dim)?;
+        let cos = cos.unsqueeze(unsqueeze_dim)?;
 
         let mut dim_sin = sin.dims().to_vec();
         let mut dim_cos = cos.dims().to_vec();
 
-        dim_sin[repeat_dim] = repeat_count;
-        dim_cos[repeat_dim] = repeat_count;
+        dim_sin[unsqueeze_dim] = repeat_count;
+        dim_cos[unsqueeze_dim] = repeat_count;
 
-        let sin = sin.broadcast_as(dim_sin)?;
-        let cos = cos.broadcast_as(dim_cos)?;
+        // TODO: check if is same as torch.repeat_interleave
+        let sin = sin
+            .broadcast_as(dim_sin)?
+            .flatten(unsqueeze_dim, repeat_dim)?
+            .unsqueeze(unsqueeze_dim)?;
+        let cos = cos
+            .broadcast_as(dim_cos)?
+            .flatten(unsqueeze_dim, repeat_dim)?
+            .unsqueeze(unsqueeze_dim)?;
 
-        (tensor * cos)? + (Self::rotate_every_two(tensor)? * sin)
+        let rotated = Self::rotate_every_two(tensor)?;
+
+        tensor.broadcast_mul(&cos)? + rotated.broadcast_mul(&sin)
     }
 
     fn rotate_every_two(tensor: &Tensor) -> Result<Tensor> {
