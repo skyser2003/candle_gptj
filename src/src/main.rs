@@ -21,7 +21,7 @@ struct Arguments {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let args = Arguments::parse();
 
     println!("args: {:?}", args);
@@ -54,7 +54,7 @@ async fn main() {
     }
 
     let mut loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
-    let outputs = loader.inference(&["Hello World~"]).unwrap();
+    let outputs = loader.inference(&["Hello World~"])?;
 
     println!("Outputs: {:?}", outputs);
 
@@ -63,4 +63,6 @@ async fn main() {
         "Vocab size: {:?}",
         loader.get_tokenizer().get_vocab_size(true)
     );
+
+    Ok(())
 }
