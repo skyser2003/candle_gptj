@@ -52,9 +52,10 @@ async fn main() -> anyhow::Result<()> {
     } else if device.is_cuda() {
         println!("Using device '{}'", args.device.unwrap());
     }
+    println!("");
 
     let mut loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
-    let inputs = ["Hello World~"];
+    let inputs = ["Hello who are you?"];
     let outputs = loader.inference(&inputs)?;
 
     println!("Inputs: {:?}", inputs);

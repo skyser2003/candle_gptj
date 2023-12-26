@@ -120,6 +120,7 @@ impl ModelLoader {
         let tokenizer = Tokenizer::from_file(tokenizer_filename).unwrap();
 
         println!("Loading model done");
+        println!("");
 
         Self { model, tokenizer }
     }
