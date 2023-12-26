@@ -155,13 +155,38 @@ impl ModelLoader {
             &self.model.device,
         )?;
 
-        let output_ids = outputs.to_vec2::<u32>()?;
-        let output_ids = output_ids
+        let output_ids = outputs.to_vec3::<f32>()?;
+
+        let real_output_ids = output_ids
+            .iter()
+            .map(|output| {
+                let mut real_output = Vec::new();
+
+                for tokens in output {
+                    let highest_token = tokens
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                        .unwrap()
+                        .0;
+
+                    if highest_token == self.model.config.eos_token_id {
+                        break;
+                    }
+
+                    real_output.push(highest_token as u32);
+                }
+
+                real_output
+            })
+            .collect::<Vec<_>>();
+
+        let real_output_ids = real_output_ids
             .iter()
             .map(|output| output.as_slice())
             .collect::<Vec<_>>();
 
-        let outputs = self.tokenizer.decode_batch(&output_ids, true).unwrap();
+        let outputs = self.tokenizer.decode_batch(&real_output_ids, true).unwrap();
 
         Ok(outputs)
     }
@@ -714,6 +739,7 @@ impl Attention {
 
         let k = k.contiguous()?;
         let q = q.contiguous()?;
+        let v = v.contiguous()?;
 
         let present = if use_cache {
             Some(k.to_dtype(hidden_states.dtype())?)
@@ -738,7 +764,7 @@ impl Attention {
     fn merge_heads(attn_output: &Tensor, num_heads: usize, head_size: usize) -> Result<Tensor> {
         let num_dims = attn_output.dims().len();
 
-        let merged = if num_dims == 5 {
+        let attn_output = if num_dims == 5 {
             attn_output.permute((0, 1, 3, 2, 4))?.contiguous()?
         } else if num_dims == 4 {
             attn_output.permute((0, 2, 1, 3))?.contiguous()?
@@ -752,7 +778,7 @@ impl Attention {
         let mut new_shape = attn_output.dims()[0..attn_output.dims().len() - 2].to_vec();
         new_shape.push(num_heads * head_size);
 
-        merged.reshape(new_shape)
+        attn_output.reshape(new_shape)
     }
 
     fn get_attention(

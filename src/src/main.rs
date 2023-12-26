@@ -54,15 +54,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let mut loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
-    let outputs = loader.inference(&["Hello World~"])?;
+    let inputs = ["Hello World~"];
+    let outputs = loader.inference(&inputs)?;
 
+    println!("Inputs: {:?}", inputs);
     println!("Outputs: {:?}", outputs);
-
-    println!("Tensor keys: {:?}", loader.get_tensors().names());
-    println!(
-        "Vocab size: {:?}",
-        loader.get_tokenizer().get_vocab_size(true)
-    );
 
     Ok(())
 }
