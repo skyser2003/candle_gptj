@@ -883,28 +883,11 @@ impl Attention {
     }
 
     fn apply_rotary_pos_emb(tensor: &Tensor, sin: &Tensor, cos: &Tensor) -> Result<Tensor> {
-        let unsqueeze_dim = 2;
-        let repeat_count = 2;
-        let repeat_dim = 3;
+        let repeats = 2;
+        let dim = 2;
 
-        let sin = sin.unsqueeze(unsqueeze_dim)?;
-        let cos = cos.unsqueeze(unsqueeze_dim)?;
-
-        let mut dim_sin = sin.dims().to_vec();
-        let mut dim_cos = cos.dims().to_vec();
-
-        dim_sin[unsqueeze_dim] = repeat_count;
-        dim_cos[unsqueeze_dim] = repeat_count;
-
-        // TODO: check if is same as torch.repeat_interleave
-        let sin = sin
-            .broadcast_as(dim_sin)?
-            .flatten(unsqueeze_dim, repeat_dim)?
-            .unsqueeze(unsqueeze_dim)?;
-        let cos = cos
-            .broadcast_as(dim_cos)?
-            .flatten(unsqueeze_dim, repeat_dim)?
-            .unsqueeze(unsqueeze_dim)?;
+        let sin = repeat_interleave(&sin, repeats, dim)?;
+        let cos = repeat_interleave(&cos, repeats, dim)?;
 
         let rotated = Self::rotate_every_two(tensor)?;
 
@@ -948,4 +931,18 @@ impl MLP {
 
         Ok(input)
     }
+}
+
+fn repeat_interleave(tensor: &Tensor, repeats: usize, dim: usize) -> Result<Tensor> {
+    let tensor = tensor.unsqueeze(dim)?;
+
+    let mut shape = tensor.dims().to_vec();
+    shape[dim] = repeats;
+
+    let tensor = tensor.broadcast_as(shape)?;
+    let tensor = tensor.transpose(dim, dim + 1)?;
+    let tensor = tensor.flatten(dim, dim + 1)?;
+    let tensor = tensor.unsqueeze(dim);
+
+    tensor
 }

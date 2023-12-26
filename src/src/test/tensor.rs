@@ -26,3 +26,38 @@ async fn dropout() {
 
     println!("{:?}", result.unwrap());
 }
+
+#[tokio::test]
+async fn test_repeat_interleave() -> anyhow::Result<()> {
+    use candle_core::{Device, Tensor};
+
+    let dim = 1;
+    let repeats = 3;
+    let device = &Device::Cpu;
+
+    let tensor = Tensor::new(&[[1u32, 2, 3], [4, 5, 6]], device).unwrap();
+    let tensor = tensor.unsqueeze(1)?;
+
+    let mut shape = tensor.dims().to_vec();
+    shape[dim] = repeats;
+
+    println!("{}\n", tensor);
+
+    let tensor = tensor.broadcast_as(shape)?;
+    println!("{}\n", tensor);
+
+    let tensor = tensor.transpose(dim, dim + 1)?;
+    println!("{}\n", tensor);
+
+    let tensor = tensor.flatten(dim, dim + 1)?;
+    println!("{}\n", tensor);
+
+    let answer_tensor = Tensor::new(
+        &[[1u32, 1, 1, 2, 2, 2, 3, 3, 3], [4, 4, 4, 5, 5, 5, 6, 6, 6]],
+        device,
+    )?;
+
+    assert_eq!(tensor.to_vec2::<u32>()?, answer_tensor.to_vec2::<u32>()?);
+
+    Ok(())
+}
