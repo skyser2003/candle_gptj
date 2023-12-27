@@ -171,7 +171,7 @@ impl ModelLoader {
 
         let input_ids = Tensor::new(tokens, &self.model.device)?;
 
-        let outputs = self.model.model.forward(
+        let hidden_states = self.model.model.forward(
             Some(&input_ids),
             None,
             None,
@@ -186,7 +186,13 @@ impl ModelLoader {
             &self.model.device,
         )?;
 
-        let output_ids = outputs.to_vec3::<f32>()?;
+        let lm_logits: Tensor = self
+            .model
+            .lm_head
+            .forward(&hidden_states)?
+            .to_dtype(DType::F32)?;
+
+        let output_ids = lm_logits.to_vec3::<f32>()?;
 
         let real_output_ids = output_ids
             .iter()
