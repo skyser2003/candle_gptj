@@ -17,6 +17,7 @@ pub struct ModelWrapper {
     pub device: Device,
     pub config: Config,
     pub model: CoreModel,
+    pub lm_head: Linear,
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -105,7 +106,35 @@ impl ModelLoader {
 
         let model_filename = model_dir.join("model.safetensors");
         let buffer = Self::load_model(&model_filename);
-        let core_model = CoreModel::new(&model_filename, &device, &config);
+
+        let dtype_map = vec![
+            ("float16", (DType::F16, -65504.0)),
+            ("float32", (DType::F32, f32::MIN)),
+            ("bfloat16", (DType::BF16, -3.38e38)),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+        let torch_dtype = config.torch_dtype.clone().unwrap_or("".to_string());
+
+        let torch_dtype = if dtype_map.contains_key(torch_dtype.as_str()) {
+            torch_dtype
+        } else {
+            "float32".to_string()
+        };
+
+        let (dtype, dtype_min) = *dtype_map.get(torch_dtype.as_str()).unwrap();
+
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[model_filename.clone()], dtype, &device).unwrap()
+        };
+
+        let core_model = CoreModel::new(&vb, dtype, dtype_min, &device, &config);
+        let lm_head = Linear::new(
+            vb.get((config.vocab_size, config.n_embd), "lm_head.weight")
+                .unwrap(),
+            Some(vb.get(config.vocab_size, "lm_head.bias").unwrap()),
+        );
 
         let model = ModelWrapper {
             model_filename,
@@ -113,6 +142,7 @@ impl ModelLoader {
             device: device.clone(),
             config,
             model: core_model,
+            lm_head,
         };
 
         let tokenizer_dir = std::path::Path::new(tokenizer_dir);
@@ -214,29 +244,13 @@ impl ModelWrapper {
 }
 
 impl CoreModel {
-    fn new(model_filename: &PathBuf, device: &Device, config: &Config) -> CoreModel {
-        let dtype_map = vec![
-            ("float16", (DType::F16, -65504.0)),
-            ("float32", (DType::F32, f32::MIN)),
-            ("bfloat16", (DType::BF16, -3.38e38)),
-        ]
-        .into_iter()
-        .collect::<HashMap<_, _>>();
-
-        let torch_dtype = config.torch_dtype.clone().unwrap_or("".to_string());
-
-        let torch_dtype = if dtype_map.contains_key(torch_dtype.as_str()) {
-            torch_dtype
-        } else {
-            "float32".to_string()
-        };
-
-        let (dtype, dtype_min) = *dtype_map.get(torch_dtype.as_str()).unwrap();
-
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[model_filename.clone()], dtype, &device).unwrap()
-        };
-
+    fn new(
+        vb: &VarBuilder,
+        dtype: DType,
+        dtype_min: f32,
+        device: &Device,
+        config: &Config,
+    ) -> CoreModel {
         let tf_vb = vb.pp("transformer");
 
         let word_token_embedding = Embedding::new(
