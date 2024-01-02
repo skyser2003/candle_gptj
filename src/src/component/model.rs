@@ -192,38 +192,16 @@ impl ModelLoader {
             .forward(&hidden_states)?
             .to_dtype(DType::F32)?;
 
-        let output_ids = lm_logits.to_vec3::<f32>()?;
+        let output_ids = lm_logits.argmax(D::Minus1)?;
+        let output_ids = output_ids.to_vec2::<u32>()?;
 
-        let real_output_ids = output_ids
+        let output_ids = output_ids
             .iter()
-            .map(|output| {
-                let mut real_output = Vec::new();
-
-                for tokens in output {
-                    let highest_token = tokens
-                        .iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                        .unwrap()
-                        .0;
-
-                    if highest_token == self.model.config.eos_token_id {
-                        break;
-                    }
-
-                    real_output.push(highest_token as u32);
-                }
-
-                real_output
-            })
+            .map(|ids| ids.as_slice())
             .collect::<Vec<_>>();
+        let output_ids = output_ids.as_slice();
 
-        let real_output_ids = real_output_ids
-            .iter()
-            .map(|output| output.as_slice())
-            .collect::<Vec<_>>();
-
-        let outputs = self.tokenizer.decode_batch(&real_output_ids, true).unwrap();
+        let outputs = self.tokenizer.decode_batch(&output_ids, true).unwrap();
 
         Ok(outputs)
     }
