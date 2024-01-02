@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let outputs = loader.inference(&inputs)?;
 
     println!("Inputs: {:?}", inputs);
-    println!("Outputs: {:?}", outputs);
+    println!("Outputs: {:?}, length: {}", outputs, outputs.len());
 
     Ok(())
 }
