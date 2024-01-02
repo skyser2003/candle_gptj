@@ -14,7 +14,7 @@ def main():
 
     model_dir: str = args.model_dir
 
-    model = GPTJModel.from_pretrained(model_dir, device_map="auto")
+    model = GPTJForCausalLM.from_pretrained(model_dir, use_safetensors=False)
     model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
@@ -24,10 +24,10 @@ def main():
 
     result = model.forward(input_ids)
 
-    hidden_state = result["last_hidden_state"]
-    hidden_state = torch.argmax(hidden_state, dim=-1)
+    logits = result["logits"]
+    output_tokens = torch.argmax(logits, dim=-1)
 
-    outputs = tokenizer.batch_decode(hidden_state, skip_special_tokens=True)
+    outputs = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
     print(outputs)
 
