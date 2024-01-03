@@ -1,7 +1,9 @@
 use std::{collections::HashMap, fs::File, path::PathBuf};
 
+use candle_core::IndexOp;
 use candle_core::{DType, Device, Result, Tensor, D};
 use candle_nn::{ops::softmax, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder};
+use candle_transformers::generation::LogitsProcessor;
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
 use tokenizers::Tokenizer;
@@ -163,6 +165,7 @@ impl ModelLoader {
     }
 
     pub fn inference(&mut self, inputs: &[&str]) -> Result<Vec<String>> {
+        let batch_size = inputs.len();
         let encodings = self.tokenizer.encode_batch(inputs.to_vec(), true).unwrap();
         let tokens = encodings
             .iter()
@@ -192,14 +195,25 @@ impl ModelLoader {
             .forward(&hidden_states)?
             .to_dtype(DType::F32)?;
 
-        let output_ids = lm_logits.argmax(D::Minus1)?;
-        let output_ids = output_ids.to_vec2::<u32>()?;
+        // TODO top_k, etc
+        let next_logits = lm_logits.narrow(1, lm_logits.dim(1)? - 2, 1)?.squeeze(1)?;
+
+        let mut output_ids = vec![];
+
+        for _ in 0..batch_size {
+            // TODO LogitsProcessor saved per batch, not every loop
+            let mut logits_proc = LogitsProcessor::new(0, None, Some(0.3));
+            let next_logit = next_logits.i(0)?;
+
+            let gen_id = logits_proc.sample(&next_logit)?;
+
+            output_ids.push([gen_id]);
+        }
 
         let output_ids = output_ids
             .iter()
             .map(|ids| ids.as_slice())
             .collect::<Vec<_>>();
-        let output_ids = output_ids.as_slice();
 
         let outputs = self.tokenizer.decode_batch(&output_ids, true).unwrap();
 
