@@ -1,6 +1,6 @@
 from argparse import ArgumentParser
 
-from transformers import GPTJModel, GPTJForCausalLM, AutoTokenizer
+from transformers import GPTJModel, GPTJForCausalLM, AutoTokenizer, GenerationConfig
 import torch
 
 
@@ -23,9 +23,17 @@ def main():
     input_ids = tokenizer.batch_encode_plus(inputs, return_tensors="pt")["input_ids"]
 
     result = model.forward(input_ids)
-
     logits = result["logits"]
     output_tokens = torch.argmax(logits, dim=-1)
+
+    gen_config: GenerationConfig = GenerationConfig(
+        num_beams=1,
+        do_sample=False,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+
+    output_tokens = model.generate(input_ids, gen_config)
 
     outputs = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
