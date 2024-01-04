@@ -61,3 +61,35 @@ async fn test_repeat_interleave() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn cpu_test() -> anyhow::Result<()> {
+    use std::time::Instant;
+
+    use candle_core::IndexOp;
+    use candle_core::{Device, Tensor};
+
+    // let device = Device::new_cuda(0).unwrap();
+    let start = Instant::now();
+    let device = Device::Cpu;
+
+    let loop_count = 10000000;
+
+    let tensor1 = Tensor::randn(0f32, 1f32, (loop_count, 3, 3), &device)?;
+    let tensor2 = Tensor::randn(0f32, 1f32, (loop_count, 3, 3), &device)?;
+
+    let mut res = Tensor::new(&[0u32], &device).unwrap();
+
+    for i in 0..loop_count {
+        let a = tensor1.i(i).unwrap();
+        let b = tensor2.i(i).unwrap();
+
+        res = a.matmul(&b).unwrap();
+    }
+
+    let end = start.elapsed().as_secs_f32();
+    eprintln!("Elapsed time: {:?}s, {} times", end, loop_count);
+    eprintln!("res = {}", res);
+
+    Ok(())
+}
