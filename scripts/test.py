@@ -43,26 +43,31 @@ def main():
 
 
 def cpu_test():
-    start_time = time.time()
     device = "cpu"
-    loop_count = 10000000
-    tensor_cpu = torch.randn((loop_count, 3, 3), device=device)
-    tensor_cpu2 = torch.randn((loop_count, 3, 3), device=device)
+    loop_count = 10
+    mat_size = 3000
+    tensor1 = torch.randn(
+        (loop_count, mat_size, mat_size), dtype=torch.float32, device=device
+    )
+    tensor2 = torch.randn(
+        (loop_count, mat_size, mat_size), dtype=torch.float32, device=device
+    )
 
     result_cpu = torch.tensor([0], device=device)
 
+    start_time = time.time()
     # for a, b in tqdm.tqdm(zip(tensor_cpu, tensor_cpu2), total=tensor_cpu.shape[0]):
     for i in range(loop_count):
-        a = tensor_cpu[i]
-        b = tensor_cpu2[i]
+        a = tensor1[i]
+        b = tensor2[i]
 
-        result_cpu = torch.mm(a, b)
+        torch.mm(a, b)
 
     end_time = time.time()
     elapsed_time = end_time - start_time
 
     print(f"Elapsed: {elapsed_time}s, {loop_count} times")
-    print(f"res = {result_cpu}")
+    print(f"res = {result_cpu.shape}")
 
 
 if __name__ == "__main__":
