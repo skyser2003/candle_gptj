@@ -62,8 +62,11 @@ async fn test_repeat_interleave() -> anyhow::Result<()> {
     Ok(())
 }
 
+const LOOP_COUNT: usize = 10;
+const MAT_SIZE: usize = 3000;
+
 #[tokio::test]
-async fn cpu_test1() -> anyhow::Result<()> {
+async fn cpu_test_candle() -> anyhow::Result<()> {
     use std::hint::black_box;
     use std::time::Instant;
 
@@ -73,17 +76,14 @@ async fn cpu_test1() -> anyhow::Result<()> {
     // let device = Device::new_cuda(0).unwrap();
     let device = Device::Cpu;
 
-    let loop_count = 10;
-    let mat_size = 3000;
-
-    let tensor1 = Tensor::randn(0f32, 1f32, (loop_count, mat_size, mat_size), &device)?;
-    let tensor2 = Tensor::randn(0f32, 1f32, (loop_count, mat_size, mat_size), &device)?;
+    let tensor1 = Tensor::randn(0f32, 1f32, (LOOP_COUNT, MAT_SIZE, MAT_SIZE), &device)?;
+    let tensor2 = Tensor::randn(0f32, 1f32, (LOOP_COUNT, MAT_SIZE, MAT_SIZE), &device)?;
 
     let mut res = Tensor::new(&[0u32], &device).unwrap();
 
     let start = Instant::now();
 
-    for i in 0..loop_count {
+    for i in 0..LOOP_COUNT {
         let a = tensor1.i(i)?;
         let b = tensor2.i(i)?;
 
@@ -91,73 +91,40 @@ async fn cpu_test1() -> anyhow::Result<()> {
     }
 
     let end = start.elapsed().as_secs_f32();
-    eprintln!("Elapsed time: {:?}s, {} times", end, loop_count);
+    eprintln!("Elapsed time: {:?}s, {} times", end, LOOP_COUNT);
     eprintln!("res = {:?}", res.shape());
 
     Ok(())
 }
 
-#[tokio::test]
-async fn cpu_test2() -> anyhow::Result<()> {
+async fn burn_test<B: burn::tensor::backend::Backend>(
+    device: &B::Device,
+    loop_count: usize,
+    mat_size: usize,
+) -> anyhow::Result<()> {
     use std::hint::black_box;
     use std::time::Instant;
 
     use burn::tensor;
-    use burn::{
-        backend::{
-            candle::CandleDevice,
-            libtorch::LibTorchDevice,
-            wgpu::{AutoGraphicsApi, WgpuDevice},
-            Candle, LibTorch, Wgpu,
-        },
-        record::Record,
-        tensor::backend::Backend,
-        tensor::{Float, Int, Tensor},
-    };
+    use burn::tensor::{Float, Int, Tensor};
 
-    enum Environments {
-        Wgpu(Wgpu<AutoGraphicsApi, f32, i32>),
-        LibTorch(LibTorch),
-        Candle(Candle),
-    }
-
-    // fn getRuntimeEnvironment<B: Backend>(env: Environments) -> (B, Backend::Device) {
-    //     match env {
-    //         Environments::Wgpu(backend) => (backend, WgpuDevice::Cpu),
-    //         Environments::LibTorch(backend) => (backend, LibTorchDevice::default()),
-    //         Environments::Candle(backend) => (backend, CandleDevice::Cpu),
-    //     }
-    // }
-
-    let loop_count = 10;
-    let mat_size = 3000;
-
-    // type Backend = Wgpu<AutoGraphicsApi, f32, i32>;
-    // let device = WgpuDevice::Cpu;
-
-    type CurrentBackend = LibTorch;
-    let device = LibTorchDevice::default();
-
-    // type Backend = Candle;
-    // let device = CandleDevice::Cpu;
-
-    let tensor1 = Tensor::<CurrentBackend, 3>::random_device(
+    let tensor1 = Tensor::<B, 3>::random_device(
         [loop_count, mat_size, mat_size],
         tensor::Distribution::Normal(0.0, 1.0),
         &device,
     );
-    let tensor2 = Tensor::<CurrentBackend, 3>::random_device(
+    let tensor2 = Tensor::<B, 3>::random_device(
         [loop_count, mat_size, mat_size],
         tensor::Distribution::Normal(0.0, 1.0),
         &device,
     );
 
-    let mut res = Tensor::<CurrentBackend, 2, Float>::zeros([mat_size, mat_size]);
+    let mut res = Tensor::<B, 2, Float>::zeros([mat_size, mat_size]);
 
     let start = Instant::now();
 
     for i in 0..loop_count {
-        let index_tensor = Tensor::<CurrentBackend, 1, Int>::from_ints([i as i32]);
+        let index_tensor = Tensor::<B, 1, Int>::from_ints([i as i32]);
 
         let a = tensor1.clone().select(0, index_tensor.clone()).squeeze(0);
         let b = tensor2.clone().select(0, index_tensor.clone()).squeeze(0);
@@ -170,4 +137,36 @@ async fn cpu_test2() -> anyhow::Result<()> {
     eprintln!("res = {:?}", res.shape());
 
     Ok(())
+}
+
+#[tokio::test]
+async fn cpu_test_burn_candle() -> anyhow::Result<()> {
+    use burn::backend::{candle::CandleDevice, Candle};
+
+    type CurrentBackend = Candle;
+    let device = CandleDevice::Cpu;
+
+    burn_test::<CurrentBackend>(&device, LOOP_COUNT, MAT_SIZE).await
+}
+#[tokio::test]
+async fn cpu_test_burn_wgpu() -> anyhow::Result<()> {
+    use burn::backend::{
+        wgpu::{AutoGraphicsApi, WgpuDevice},
+        Wgpu,
+    };
+
+    type CurrentBackend = Wgpu<AutoGraphicsApi, f32, i32>;
+    let device = WgpuDevice::Cpu;
+
+    burn_test::<CurrentBackend>(&device, LOOP_COUNT, MAT_SIZE).await
+}
+
+#[tokio::test]
+async fn cpu_test_burn_tch() -> anyhow::Result<()> {
+    use burn::backend::{libtorch::LibTorchDevice, LibTorch};
+
+    type CurrentBackend = LibTorch;
+    let device = LibTorchDevice::default();
+
+    burn_test::<CurrentBackend>(&device, LOOP_COUNT, MAT_SIZE).await
 }
