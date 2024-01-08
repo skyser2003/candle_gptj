@@ -7,6 +7,7 @@ use clap::Parser;
 use candle_core::{backend::BackendDevice, CudaDevice, Device};
 
 use component::model::ModelLoader;
+use tokio::time::Instant;
 
 #[derive(Parser, Debug)]
 struct Arguments {
@@ -56,10 +57,17 @@ async fn main() -> anyhow::Result<()> {
 
     let mut loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
     let inputs = ["Hello who are you?"];
+
+    let start_time = Instant::now();
     let outputs = loader.inference(&inputs)?;
+    let end_time = Instant::now();
 
     println!("Inputs: {:?}", inputs);
     println!("Outputs: {:?}, length: {}", outputs, outputs.len());
+    println!(
+        "Total single token time: {}",
+        (end_time - start_time).as_secs_f32()
+    );
 
     Ok(())
 }

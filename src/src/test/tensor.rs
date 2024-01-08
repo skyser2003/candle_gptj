@@ -162,11 +162,21 @@ async fn cpu_test_burn_wgpu() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn cpu_test_burn_tch() -> anyhow::Result<()> {
+async fn cpu_test_burn_tch_cpu() -> anyhow::Result<()> {
     use burn::backend::{libtorch::LibTorchDevice, LibTorch};
 
     type CurrentBackend = LibTorch;
     let device = LibTorchDevice::default();
+
+    burn_test::<CurrentBackend>(&device, LOOP_COUNT, MAT_SIZE).await
+}
+
+#[tokio::test]
+async fn cpu_test_burn_tch_gpu() -> anyhow::Result<()> {
+    use burn::backend::{libtorch::LibTorchDevice, LibTorch};
+
+    type CurrentBackend = LibTorch;
+    let device = LibTorchDevice::Cuda(0);
 
     burn_test::<CurrentBackend>(&device, LOOP_COUNT, MAT_SIZE).await
 }
