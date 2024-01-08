@@ -201,6 +201,17 @@ impl ModelLoader {
 
         let lm_logits = self.forward(&input_ids)?;
 
+        let logits = lm_logits.argmax(D::Minus1)?;
+        let logits = logits.to_vec2::<u32>()?;
+
+        let logits = logits
+            .iter()
+            .map(|nested_vec| nested_vec.as_slice())
+            .collect::<Vec<_>>();
+
+        let outputs = self.tokenizer.decode_batch(&logits, true).unwrap();
+        return Ok(outputs);
+
         // TODO top_k, etc
         let next_logits = lm_logits.narrow(1, lm_logits.dim(1)? - 2, 1)?.squeeze(1)?;
 
