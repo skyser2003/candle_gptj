@@ -368,7 +368,7 @@ impl CoreModel {
         let position_ids = if position_ids.is_none() {
             let position_ids = Tensor::arange(
                 past_length as i64,
-                *input_shape.dims().last().unwrap() as i64,
+                *input_shape.dims().last().unwrap() as i64 + past_length as i64,
                 &device,
             )?;
             position_ids.unsqueeze(0)?
