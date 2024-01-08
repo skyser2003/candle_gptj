@@ -95,6 +95,7 @@ pub struct Attention {
 pub struct MLP {
     pub fc_in: Linear,
     pub fc_out: Linear,
+    pub dropout: Dropout,
 }
 
 impl ModelLoader {
@@ -581,7 +582,7 @@ impl HiddenLayer {
             device,
         );
 
-        let mlp = MLP::new(mlp_vb, inner_size, embed_size);
+        let mlp = MLP::new(mlp_vb, inner_size, embed_size, resid_pdrop);
 
         HiddenLayer {
             layer_norm,
@@ -940,7 +941,7 @@ impl Attention {
 }
 
 impl MLP {
-    pub fn new(vb: VarBuilder, inter_size: usize, embed_size: usize) -> MLP {
+    pub fn new(vb: VarBuilder, inter_size: usize, embed_size: usize, resid_pdrop: f32) -> MLP {
         let fc_in = Linear::new(
             vb.get((inter_size, embed_size), "fc_in.weight").unwrap(),
             Some(vb.get(inter_size, "fc_in.bias").unwrap()),
@@ -949,16 +950,22 @@ impl MLP {
             vb.get((embed_size, inter_size), "fc_out.weight").unwrap(),
             Some(vb.get(embed_size, "fc_out.bias").unwrap()),
         );
+        let dropout = Dropout::new(resid_pdrop);
 
-        MLP { fc_in, fc_out }
+        MLP {
+            fc_in,
+            fc_out,
+            dropout,
+        }
     }
 
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
         let input = self.fc_in.forward(&input)?;
         let input = input.gelu()?; // TODO: pytorch uses gelu_new
         let input = self.fc_out.forward(&input)?;
+        let input = self.dropout.forward(&input, false);
 
-        Ok(input)
+        input
     }
 }
 
