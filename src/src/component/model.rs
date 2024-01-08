@@ -164,16 +164,7 @@ impl ModelLoader {
         buffer
     }
 
-    pub fn inference(&mut self, inputs: &[&str]) -> Result<Vec<String>> {
-        let batch_size = inputs.len();
-        let encodings = self.tokenizer.encode_batch(inputs.to_vec(), true).unwrap();
-        let tokens = encodings
-            .iter()
-            .map(|enc| enc.get_ids())
-            .collect::<Vec<_>>();
-
-        let input_ids = Tensor::new(tokens, &self.model.device)?;
-
+    pub fn forward(&mut self, input_ids: &Tensor) -> Result<Tensor> {
         let hidden_states = self.model.model.forward(
             Some(&input_ids),
             None,
@@ -189,11 +180,26 @@ impl ModelLoader {
             &self.model.device,
         )?;
 
-        let lm_logits: Tensor = self
+        let lm_logits = self
             .model
             .lm_head
             .forward(&hidden_states)?
-            .to_dtype(DType::F32)?;
+            .to_dtype(DType::F32);
+
+        lm_logits
+    }
+
+    pub fn inference(&mut self, inputs: &[&str]) -> Result<Vec<String>> {
+        let batch_size = inputs.len();
+        let encodings = self.tokenizer.encode_batch(inputs.to_vec(), true).unwrap();
+        let tokens = encodings
+            .iter()
+            .map(|enc| enc.get_ids())
+            .collect::<Vec<_>>();
+
+        let input_ids = Tensor::new(tokens, &self.model.device)?;
+
+        let lm_logits = self.forward(&input_ids)?;
 
         // TODO top_k, etc
         let next_logits = lm_logits.narrow(1, lm_logits.dim(1)? - 2, 1)?.squeeze(1)?;
