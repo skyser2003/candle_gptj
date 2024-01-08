@@ -2,6 +2,7 @@ use std::{collections::HashMap, fs::File, path::PathBuf};
 
 use candle_core::IndexOp;
 use candle_core::{DType, Device, Result, Tensor, D};
+use candle_nn::Activation;
 use candle_nn::{ops::softmax, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder};
 use candle_transformers::generation::LogitsProcessor;
 use memmap2::{Mmap, MmapOptions};
@@ -95,6 +96,7 @@ pub struct Attention {
 pub struct MLP {
     pub fc_in: Linear,
     pub fc_out: Linear,
+    pub activation: Activation,
     pub dropout: Dropout,
 }
 
@@ -950,22 +952,24 @@ impl MLP {
             vb.get((embed_size, inter_size), "fc_out.weight").unwrap(),
             Some(vb.get(embed_size, "fc_out.bias").unwrap()),
         );
+        let activation = candle_nn::activation::Activation::NewGelu;
         let dropout = Dropout::new(resid_pdrop);
 
         MLP {
             fc_in,
             fc_out,
+            activation,
             dropout,
         }
     }
 
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
         let input = self.fc_in.forward(&input)?;
-        let input = input.gelu()?; // TODO: pytorch uses gelu_new
+        let input = self.activation.forward(&input)?;
         let input = self.fc_out.forward(&input)?;
-        let input = self.dropout.forward(&input, false);
+        let input = self.dropout.forward(&input, false)?;
 
-        input
+        Ok(input)
     }
 }
 
