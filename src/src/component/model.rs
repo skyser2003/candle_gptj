@@ -955,7 +955,7 @@ impl MLP {
 
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
         let input = self.fc_in.forward(&input)?;
-        let input = input.gelu()?;
+        let input = input.gelu()?; // TODO: pytorch uses gelu_new
         let input = self.fc_out.forward(&input)?;
 
         Ok(input)
