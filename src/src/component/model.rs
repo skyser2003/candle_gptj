@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs::File, path::PathBuf};
 
 use candle_core::IndexOp;
 use candle_core::{DType, Device, Result, Tensor, D};
-use candle_nn::Activation;
+use candle_nn::{linear, linear_no_bias, Activation};
 use candle_nn::{ops::softmax, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder};
 use candle_transformers::generation::LogitsProcessor;
 use memmap2::{Mmap, MmapOptions};
@@ -135,11 +135,7 @@ impl ModelLoader {
         };
 
         let core_model = CoreModel::new(&vb, dtype, dtype_min, &device, &config);
-        let lm_head = Linear::new(
-            vb.get((config.vocab_size, config.n_embd), "lm_head.weight")
-                .unwrap(),
-            Some(vb.get(config.vocab_size, "lm_head.bias").unwrap()),
-        );
+        let lm_head = linear(config.n_embd, config.vocab_size, vb.pp("lm_head")).unwrap();
 
         let model = ModelWrapper {
             model_filename,
@@ -617,7 +613,7 @@ impl HiddenLayer {
             device,
         )?;
 
-        let feed_forward_hidden_states = self.mlp.forward(&attn_output)?;
+        let feed_forward_hidden_states = self.mlp.forward(&hidden_states)?;
         let hidden_states = (attn_output + feed_forward_hidden_states + residual)?;
 
         if use_cache {
@@ -641,22 +637,10 @@ impl Attention {
         resid_pdrop: f32,
         device: &Device,
     ) -> Attention {
-        let q = Linear::new(
-            vb.get((embed_size, embed_size), "q_proj.weight").unwrap(),
-            None,
-        );
-        let k = Linear::new(
-            vb.get((embed_size, embed_size), "k_proj.weight").unwrap(),
-            None,
-        );
-        let v = Linear::new(
-            vb.get((embed_size, embed_size), "v_proj.weight").unwrap(),
-            None,
-        );
-        let out = Linear::new(
-            vb.get((embed_size, embed_size), "out_proj.weight").unwrap(),
-            None,
-        );
+        let q = linear_no_bias(embed_size, embed_size, vb.pp("q_proj")).unwrap();
+        let k = linear_no_bias(embed_size, embed_size, vb.pp("k_proj")).unwrap();
+        let v = linear_no_bias(embed_size, embed_size, vb.pp("v_proj")).unwrap();
+        let out = linear_no_bias(embed_size, embed_size, vb.pp("out_proj")).unwrap();
 
         let mut bias_vec = vec![0u8; max_pos_embeddings * max_pos_embeddings];
 
@@ -944,14 +928,9 @@ impl Attention {
 
 impl MLP {
     pub fn new(vb: VarBuilder, inter_size: usize, embed_size: usize, resid_pdrop: f32) -> MLP {
-        let fc_in = Linear::new(
-            vb.get((inter_size, embed_size), "fc_in.weight").unwrap(),
-            Some(vb.get(inter_size, "fc_in.bias").unwrap()),
-        );
-        let fc_out = Linear::new(
-            vb.get((embed_size, inter_size), "fc_out.weight").unwrap(),
-            Some(vb.get(embed_size, "fc_out.bias").unwrap()),
-        );
+        let fc_in = linear(embed_size, inter_size, vb.pp("fc_in")).unwrap();
+        let fc_out = linear(inter_size, embed_size, vb.pp("fc_out")).unwrap();
+
         let activation = candle_nn::activation::Activation::NewGelu;
         let dropout = Dropout::new(resid_pdrop);
 
@@ -963,10 +942,27 @@ impl MLP {
         }
     }
 
+    #[inline(always)]
+    fn gelu(input: &Tensor) -> Result<Tensor> {
+        let inter = (input * (2.0f32 / std::f32::consts::PI).sqrt() as f64)?
+            * (1.0f64 + (0.044715f64 * input * input)?)?;
+        let inter = inter?;
+
+        0.5f64 * input * (1.0f64 + inter.tanh()?)?
+    }
+
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        let input = self.fc_in.forward(&input)?;
-        let input = self.activation.forward(&input)?;
+        println!("{}", input);
+        // let input = self.fc_in.forward(&input)?;
+        let weight = &self.fc_in.weight().broadcast_left(input.dim(0)?)?.t()?;
+        let input = input.matmul(weight)?;
+        //let input = input.broadcast_add(self.fc_in.bias().unwrap());
+        //let input = input?;
+        println!("{}", input);
+        let input = Self::gelu(&input)?;
+        //println!("{}", input);
         let input = self.fc_out.forward(&input)?;
+        //println!("{}", input);
         let input = self.dropout.forward(&input, false)?;
 
         Ok(input)

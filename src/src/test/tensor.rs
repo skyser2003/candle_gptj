@@ -180,3 +180,22 @@ async fn cpu_test_burn_tch_gpu() -> anyhow::Result<()> {
 
     burn_test::<CurrentBackend>(&device, LOOP_COUNT, MAT_SIZE).await
 }
+
+#[tokio::test]
+async fn candle_matmul_test() -> anyhow::Result<()> {
+    use candle_core::{Device, Tensor};
+
+    let device = Device::Cpu;
+
+    let t1 = Tensor::new(&[[1f32, 2.0, 3.0]], &device)?;
+    let t2 = Tensor::new(&[[1f32, 2.0, 3.0], [4.0, 5.0, 6.0]], &device)?;
+    let target = Tensor::new(&[[7f32, 1.0], [8.0, 1.0], [9.0, 1.0]], &device)?;
+
+    let mul1 = t1.matmul(&target)?;
+    let mul2 = t2.matmul(&target)?;
+
+    println!("{}", mul1);
+    println!("{}", mul2);
+
+    Ok(())
+}
