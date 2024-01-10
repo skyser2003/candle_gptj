@@ -75,7 +75,7 @@ def main():
     model_dir: str = args.model_dir
     model, tokenizer = get_model(model_dir)
 
-    inputs = "Hello"
+    inputs = "Hello who are you?"
     test_single(model, tokenizer, inputs)
     # test_generate(model, tokenizer, inputs)
 
