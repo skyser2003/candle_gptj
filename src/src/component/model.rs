@@ -952,13 +952,9 @@ impl MLP {
     }
 
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        println!("{}", input);
         let input = self.fc_in.forward(&input)?;
-        println!("{}", input);
         let input = Self::gelu(&input)?;
-        //println!("{}", input);
         let input = self.fc_out.forward(&input)?;
-        //println!("{}", input);
         let input = self.dropout.forward(&input, false)?;
 
         Ok(input)
