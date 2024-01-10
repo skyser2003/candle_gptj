@@ -646,7 +646,7 @@ impl Attention {
 
         for i in 0..max_pos_embeddings {
             for j in 0..max_pos_embeddings {
-                let is_tril = j <= i;
+                let is_tril = i <= j;
 
                 if is_tril {
                     bias_vec[i + j * max_pos_embeddings] = 1;
