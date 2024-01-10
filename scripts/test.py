@@ -15,19 +15,34 @@ import tqdm
 def get_model(model_dir: str):
     device = "cpu"
 
+    print("Begin loading model...")
+    start_time = time.time()
+
     model = GPTJForCausalLM.from_pretrained(model_dir, use_safetensors=False)
     model = model.to(device)
     model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
+    end_time = time.time()
+
+    print(f"Loading model done, {end_time - start_time}s")
+
     return model, tokenizer
 
 
-def test_single(model: GPTJForCausalLM, tokenizer: PreTrainedTokenizer, sentence: str):
+def test_single(
+    model: GPTJForCausalLM, tokenizer: PreTrainedTokenizer, inputs: list[str]
+):
+    # Hot loading
+    hot_input_ids = tokenizer.batch_encode_plus(["Hot loading"], return_tensors="pt")[
+        "input_ids"
+    ]
+    hot_input_ids = hot_input_ids.to(model.device)
+    model.forward(hot_input_ids)
+
     start_time = time.time()
 
-    inputs = [sentence]
     input_ids = tokenizer.batch_encode_plus(inputs, return_tensors="pt")["input_ids"]
     input_ids = input_ids.to(model.device)
 
@@ -75,7 +90,7 @@ def main():
     model_dir: str = args.model_dir
     model, tokenizer = get_model(model_dir)
 
-    inputs: list[str] = ["Hello who are you?", "What is your name?"]
+    inputs = ["Hello who are you?", "What is your name?"]
     test_single(model, tokenizer, inputs)
     # test_generate(model, tokenizer, inputs)
 

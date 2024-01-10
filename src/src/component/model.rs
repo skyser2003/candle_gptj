@@ -1,3 +1,4 @@
+use std::time::Instant;
 use std::{collections::HashMap, fs::File, path::PathBuf};
 
 use candle_core::IndexOp;
@@ -104,6 +105,7 @@ pub struct MLP {
 impl ModelLoader {
     pub fn new(model_dir: &str, tokenizer_dir: &str, device: &Device) -> ModelLoader {
         println!("Begin loading model...");
+        let start_time = Instant::now();
 
         let model_dir = std::path::Path::new(model_dir);
 
@@ -151,10 +153,19 @@ impl ModelLoader {
         let tokenizer_filename = tokenizer_dir.join("tokenizer.json");
         let tokenizer = Tokenizer::from_file(tokenizer_filename).unwrap();
 
-        println!("Loading model done");
+        let mut instance = Self { model, tokenizer };
+
+        let _ = instance.inference(&["hot loading"]);
+
+        let end_time = Instant::now();
+
+        println!(
+            "Loading model done, {}s",
+            (end_time - start_time).as_secs_f32()
+        );
         println!("");
 
-        Self { model, tokenizer }
+        instance
     }
 
     pub fn load_model(model_filename: &PathBuf) -> Mmap {
