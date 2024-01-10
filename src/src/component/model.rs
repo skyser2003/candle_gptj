@@ -87,6 +87,7 @@ pub struct Attention {
     pub num_heads: usize,
     pub head_size: usize,
     pub rotary_dim: usize,
+    pub scale_attn: Tensor,
     pub bias: Tensor,
     pub embed_positions: Tensor,
     pub attn_dropout: Dropout,
@@ -661,6 +662,9 @@ impl Attention {
         )
         .unwrap();
 
+        let scale_attn = Tensor::new(&[head_size as f32], device).unwrap();
+        let scale_attn = scale_attn.sqrt().unwrap();
+
         let embed_positions =
             Self::create_sinusoidal_positions(max_pos_embeddings, pos_embed_dimension, device)
                 .unwrap();
@@ -677,6 +681,7 @@ impl Attention {
             head_size,
             rotary_dim,
             bias,
+            scale_attn,
             embed_positions,
             attn_dropout,
             resid_dropout,
@@ -806,24 +811,26 @@ impl Attention {
         attention_mask: &Option<Tensor>,
         head_mask: &Option<Tensor>,
     ) -> Result<(Tensor, Tensor)> {
-        let query = query.to_dtype(candle_core::DType::F32)?;
-        let key = key.to_dtype(candle_core::DType::F32)?;
-
-        let attn_weights = query.matmul(&key.transpose(D::Minus1, D::Minus2)?)?;
-
         let query_length = query.dim(D::Minus2)?;
         let key_length = key.dim(D::Minus2)?;
 
         let causal_mask = self
             .bias
             .narrow(2, key_length - query_length, key_length)?
-            .narrow(3, 0, key_length)?
-            .broadcast_as(attn_weights.shape())?;
+            .narrow(3, 0, key_length)?;
+
+        let query = query.to_dtype(candle_core::DType::F32)?;
+        let key = key.to_dtype(candle_core::DType::F32)?;
+
+        let attn_weights = query.matmul(&key.transpose(D::Minus1, D::Minus2)?)?;
+
+        let causal_mask = causal_mask.broadcast_as(attn_weights.shape())?;
 
         let mask_value =
             Tensor::new(&[f32::MIN], attn_weights.device())?.broadcast_as(attn_weights.shape())?;
 
         let mut attn_weights = causal_mask.where_cond(&attn_weights, &mask_value)?;
+        attn_weights = attn_weights.broadcast_div(&self.scale_attn)?;
 
         if let Some(attention_mask) = attention_mask {
             attn_weights = (attn_weights + attention_mask)?;
