@@ -216,10 +216,10 @@ impl ModelLoader {
 
         let batch_size = inputs.len();
 
-        for _ in 0..batch_size {
+        for i in 0..batch_size {
             // TODO LogitsProcessor saved per batch, not every loop
             let mut logits_proc = LogitsProcessor::new(0, None, Some(0.3));
-            let next_logit = next_logits.i(0)?;
+            let next_logit = next_logits.i(i)?;
 
             let gen_id = logits_proc.sample(&next_logit)?;
 
