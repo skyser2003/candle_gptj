@@ -25,6 +25,7 @@ def get_model(model_dir: str, device: str):
     end_time = time.time()
 
     print(f"Loading model done, {end_time - start_time}s")
+    print()
 
     return model, tokenizer
 
@@ -52,9 +53,9 @@ def test_single(
 
     end_time = time.time()
 
+    print("Inputs: ", inputs)
+    print("Outputs: ", outputs)
     print(f"Total single token time: {end_time - start_time}s")
-
-    print(outputs)
 
 
 def test_generate(
@@ -90,6 +91,7 @@ def main():
     device: str = args.device
 
     print(f"Using device '{device}'")
+    print()
 
     model, tokenizer = get_model(model_dir, device)
 
