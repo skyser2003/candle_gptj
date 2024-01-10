@@ -623,6 +623,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle_gptj"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "burn",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "clap",
+ "hf-hub",
+ "memmap2 0.9.3",
+ "safetensors 0.4.1",
+ "serde",
+ "serde_json",
+ "tokenizers",
+ "tokio",
+]
+
+[[package]]
 name = "cassowary"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -802,11 +821,10 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-channel"
-version = "0.5.10"
+version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82a9b73a36529d9c47029b9fb3a6f0ea3cc916a261195352ba19e770fc1748b2"
+checksum = "176dc175b78f56c0f321911d9c8eb2b77a78a4860b9c19db83835fea1a46649b"
 dependencies = [
- "cfg-if",
  "crossbeam-utils",
 ]
 
@@ -3549,25 +3567,6 @@ dependencies = [
  "nom",
  "serde",
  "unicode-segmentation",
-]
-
-[[package]]
-name = "src"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "burn",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "clap",
- "hf-hub",
- "memmap2 0.9.3",
- "safetensors 0.4.1",
- "serde",
- "serde_json",
- "tokenizers",
- "tokio",
 ]
 
 [[package]]
