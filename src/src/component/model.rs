@@ -942,18 +942,9 @@ impl MLP {
         }
     }
 
-    #[inline(always)]
-    fn gelu(input: &Tensor) -> Result<Tensor> {
-        let inter = (input * (2.0f32 / std::f32::consts::PI).sqrt() as f64)?
-            * (1.0f64 + (0.044715f64 * input * input)?)?;
-        let inter = inter?;
-
-        0.5f64 * input * (1.0f64 + inter.tanh()?)?
-    }
-
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
         let input = self.fc_in.forward(&input)?;
-        let input = Self::gelu(&input)?;
+        let input = self.activation.forward(&input)?;
         let input = self.fc_out.forward(&input)?;
         let input = self.dropout.forward(&input, false)?;
 

@@ -7,10 +7,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
-burn = { version = "0.11.1", features = ["wgpu", "fusion", "tui", "candle", "tch"] }
-candle-core = { version = "=0.3.1", features = ["mkl"] }
-candle-nn = { version = "=0.3.1", features = ["mkl"] }
-candle-transformers = { version = "=0.3.1", features = ["mkl"] }
+candle-core = { version = "0.3.2" }
+candle-nn = { version = "0.3.2" }
+candle-transformers = { version = "0.3.2" }
 clap = "4.4.11"
 hf-hub = { version = "0.3.2", features = ["tokio"] }
 memmap2 = "0.9.0"

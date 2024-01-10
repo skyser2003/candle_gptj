@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     println!("");
 
     let mut loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
-    let inputs = ["Hello who"];
+    let inputs = ["Hello who are you?"];
 
     let start_time = Instant::now();
     let outputs = loader.inference(&inputs)?;
