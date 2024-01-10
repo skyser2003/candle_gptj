@@ -12,9 +12,7 @@ import torch
 import tqdm
 
 
-def get_model(model_dir: str):
-    device = "cpu"
-
+def get_model(model_dir: str, device: str):
     print("Begin loading model...")
     start_time = time.time()
 
@@ -84,13 +82,18 @@ def main():
     parser.add_argument(
         "--model_dir", required=True, help="Directory containing the model to test"
     )
+    parser.add_argument("--device", required=True, default="cpu", help="Device")
 
     args = parser.parse_args()
 
     model_dir: str = args.model_dir
-    model, tokenizer = get_model(model_dir)
+    device: str = args.device
 
-    inputs = ["Hello who are you?", "What is your name?"]
+    print(f"Using device '{device}'")
+
+    model, tokenizer = get_model(model_dir, device)
+
+    inputs: list[str] = ["Hello who are you?", "What is your name?"]
     test_single(model, tokenizer, inputs)
     # test_generate(model, tokenizer, inputs)
 
