@@ -187,12 +187,18 @@ async fn candle_matmul_test() -> anyhow::Result<()> {
 
     let device = Device::Cpu;
 
-    let t1 = Tensor::new(&[[1f32, 2.0, 3.0]], &device)?;
-    let t2 = Tensor::new(&[[1f32, 2.0, 3.0], [4.0, 5.0, 6.0]], &device)?;
-    let target = Tensor::new(&[[7f32, 1.0], [8.0, 1.0], [9.0, 1.0]], &device)?;
+    let repeat_count = 17;
 
-    let mul1 = t1.matmul(&target)?;
-    let mul2 = t2.matmul(&target)?;
+    let t1 = Tensor::new(&[[1f32]], &device)?
+        .repeat((repeat_count, repeat_count))?
+        .unsqueeze(0)?;
+    let t2 = Tensor::new(&[[1f32]], &device)?
+        .repeat((repeat_count, repeat_count))?
+        .unsqueeze(0)?;
+    let target = Tensor::new(&[[1f32]], &device)?.repeat((repeat_count, repeat_count))?;
+
+    let mul1 = t1.broadcast_matmul(&target)?;
+    let mul2 = t2.broadcast_matmul(&target)?;
 
     println!("{}", mul1);
     println!("{}", mul2);
