@@ -953,11 +953,7 @@ impl MLP {
 
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
         println!("{}", input);
-        // let input = self.fc_in.forward(&input)?;
-        let weight = &self.fc_in.weight().broadcast_left(input.dim(0)?)?.t()?;
-        let input = input.matmul(weight)?;
-        //let input = input.broadcast_add(self.fc_in.bias().unwrap());
-        //let input = input?;
+        let input = self.fc_in.forward(&input)?;
         println!("{}", input);
         let input = Self::gelu(&input)?;
         //println!("{}", input);
