@@ -176,8 +176,6 @@ impl ModelLoader {
             Some(false),
             false,
             false,
-            false,
-            &self.model.device,
         )?;
 
         let lm_logits = self
@@ -190,7 +188,6 @@ impl ModelLoader {
     }
 
     pub fn inference(&mut self, inputs: &[&str]) -> Result<Vec<String>> {
-        let batch_size = inputs.len();
         let encodings = self.tokenizer.encode_batch(inputs.to_vec(), true).unwrap();
         let tokens = encodings
             .iter()
@@ -216,6 +213,8 @@ impl ModelLoader {
         let next_logits = lm_logits.narrow(1, lm_logits.dim(1)? - 2, 1)?.squeeze(1)?;
 
         let mut output_ids = vec![];
+
+        let batch_size = inputs.len();
 
         for _ in 0..batch_size {
             // TODO LogitsProcessor saved per batch, not every loop
@@ -337,8 +336,6 @@ impl CoreModel {
         use_cache: Option<bool>,
         output_attentions: bool,
         output_hidden_states: bool,
-        return_dict: bool,
-        device: &Device,
     ) -> Result<Tensor> {
         let use_cache = use_cache.unwrap_or(self.config.use_cache);
 
