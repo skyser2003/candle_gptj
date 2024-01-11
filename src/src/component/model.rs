@@ -20,7 +20,7 @@ pub struct ModelWrapper {
     pub model_filename: PathBuf,
     pub device: Device,
     pub config: Config,
-    pub model: CoreModel,
+    pub transformer: CoreModel,
     pub lm_head: Linear,
 }
 
@@ -145,7 +145,7 @@ impl ModelLoader {
             buffer,
             device: device.clone(),
             config,
-            model: core_model,
+            transformer: core_model,
             lm_head,
         };
 
@@ -176,7 +176,7 @@ impl ModelLoader {
     }
 
     pub fn forward(&mut self, input_ids: &Tensor) -> Result<Tensor> {
-        let hidden_states = self.model.model.forward(
+        let hidden_states = self.model.transformer.forward(
             Some(&input_ids),
             None,
             None,
