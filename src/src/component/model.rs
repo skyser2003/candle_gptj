@@ -478,7 +478,6 @@ impl CoreModel {
                 &head_mask,
                 use_cache,
                 output_attentions,
-                &device,
             )?;
 
             hidden_states = local_hidden_states;
@@ -624,7 +623,6 @@ impl HiddenLayer {
         head_mask: &Option<Tensor>,
         use_cache: bool,
         output_attentions: bool,
-        device: &Device,
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
         let residual = hidden_states;
         let hidden_states = self.layer_norm.forward(&hidden_states)?;
@@ -636,7 +634,6 @@ impl HiddenLayer {
             head_mask,
             use_cache,
             output_attentions,
-            device,
         )?;
 
         let feed_forward_hidden_states = self.mlp.forward(&hidden_states)?;
@@ -722,7 +719,6 @@ impl Attention {
         head_mask: &Option<Tensor>,
         use_cache: bool,
         output_attentions: bool,
-        device: &Device,
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
         let q = self.q.forward(&hidden_states)?;
         let k = self.k.forward(&hidden_states)?;
