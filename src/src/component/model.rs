@@ -217,6 +217,12 @@ impl ModelLoader {
             .map(|nested_vec| nested_vec.as_slice())
             .collect::<Vec<_>>();
 
+        // TODO LogitsProcessor saved per batch, not every loop
+        let batch_size = inputs.len();
+        let mut logits_procs = (0..batch_size)
+            .map(|_| LogitsProcessor::new(0, None, Some(0.3)))
+            .collect::<Vec<_>>();
+
         let outputs = self.tokenizer.decode_batch(&logits, true).unwrap();
         return Ok(outputs);
 
@@ -225,11 +231,9 @@ impl ModelLoader {
 
         let mut output_ids = vec![];
 
-        let batch_size = inputs.len();
-
         for i in 0..batch_size {
             // TODO LogitsProcessor saved per batch, not every loop
-            let mut logits_proc = LogitsProcessor::new(0, None, Some(0.3));
+            let mut logits_proc = &mut logits_procs[i];
             let next_logit = next_logits.i(i)?;
 
             let gen_id = logits_proc.sample(&next_logit)?;
