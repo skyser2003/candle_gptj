@@ -102,6 +102,13 @@ pub struct MLP {
     pub dropout: Dropout,
 }
 
+pub struct CausalOutput {
+    pub last_hidden_state: Tensor,
+    pub past_key_values: Vec<(Tensor, Tensor)>,
+    pub hidden_states: Vec<Tensor>,
+    pub attentions: Vec<Tensor>,
+}
+
 impl ModelLoader {
     pub fn new(model_dir: &str, tokenizer_dir: &str, device: &Device) -> ModelLoader {
         println!("Begin loading model...");
@@ -180,7 +187,7 @@ impl ModelLoader {
         input_ids: Option<&Tensor>,
         input_embeds: Option<Tensor>,
     ) -> Result<Tensor> {
-        let (hidden_states, past_key_values) = self.model.transformer.forward(
+        let output = self.model.transformer.forward(
             input_ids,
             None,
             None,
@@ -196,7 +203,7 @@ impl ModelLoader {
         let lm_logits = self
             .model
             .lm_head
-            .forward(&hidden_states)?
+            .forward(&output.last_hidden_state)?
             .to_dtype(DType::F32);
 
         lm_logits
@@ -355,7 +362,7 @@ impl CoreModel {
         use_cache: Option<bool>,
         output_attentions: bool,
         output_hidden_states: bool,
-    ) -> Result<(Tensor, Vec<(Tensor, Tensor)>)> {
+    ) -> Result<CausalOutput> {
         let use_cache = use_cache.unwrap_or(self.config.use_cache);
 
         let (input_shape, batch_size, device) = if input_ids.is_some() && input_embeds.is_some() {
@@ -505,7 +512,14 @@ impl CoreModel {
 
         hidden_states = hidden_states.reshape(output_shape)?;
 
-        Ok((hidden_states, presents))
+        let output = CausalOutput {
+            last_hidden_state: hidden_states,
+            past_key_values: presents,
+            hidden_states: all_hidden_states,
+            attentions: all_self_attentions,
+        };
+
+        Ok(output)
     }
 
     pub fn create_embed(&self, input_ids: &Tensor) -> Result<Tensor> {
