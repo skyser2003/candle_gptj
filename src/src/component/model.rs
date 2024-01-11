@@ -365,27 +365,32 @@ impl CoreModel {
     ) -> Result<CausalOutput> {
         let use_cache = use_cache.unwrap_or(self.config.use_cache);
 
-        let (input_shape, batch_size, device) = if input_ids.is_some() && input_embeds.is_some() {
-            panic!("You cannot specify both input_ids and inputs_embeds at the same time")
-        } else if let Some(input_ids) = input_ids {
-            // TODO
-            // self.warn_if_padding_and_no_attention_mask(&input_ids, attention_mask);
+        let (input_shape, batch_size, device) = match (&input_ids, &input_embeds) {
+            (Some(_), Some(_)) => {
+                panic!("You cannot specify both input_ids and inputs_embeds at the same time")
+            }
+            (Some(input_ids), None) => {
+                // TODO
+                // self.warn_if_padding_and_no_attention_mask(&input_ids, attention_mask);
 
-            let input_shape = input_ids.shape().clone();
-            let input_ids = input_ids.reshape(((), input_ids.dim(D::Minus1)?))?;
-            let batch_size = input_ids.dim(0)?;
-            let device = input_ids.device().clone();
+                let device = input_ids.device();
 
-            (input_shape, batch_size, device)
-        } else if let Some(input_embeds) = &input_embeds {
-            let input_shape =
-                Shape::from_dims(&input_embeds.dims()[0..input_embeds.dims().len() - 1]);
-            let batch_size = input_embeds.dim(0)?;
-            let device = input_embeds.device().clone();
+                let input_shape = input_ids.shape().clone();
+                let input_ids = input_ids.reshape(((), input_ids.dim(D::Minus1)?))?;
+                let batch_size = input_ids.dim(0)?;
 
-            (input_shape, batch_size, device)
-        } else {
-            panic!("You have to specify either input_ids or inputs_embeds")
+                (input_shape, batch_size, device)
+            }
+            (None, Some(input_embeds)) => {
+                let device = input_embeds.device();
+
+                let input_shape =
+                    Shape::from_dims(&input_embeds.dims()[0..input_embeds.dims().len() - 1]);
+                let batch_size = input_embeds.dim(0)?;
+
+                (input_shape, batch_size, device)
+            }
+            (None, None) => panic!("You have to specify either input_ids or inputs_embeds"),
         };
 
         let token_type_ids = if let Some(token_type_ids) = token_type_ids {
@@ -415,7 +420,7 @@ impl CoreModel {
             let position_ids = Tensor::arange(
                 past_length as i64,
                 *input_shape.dims().last().unwrap() as i64 + past_length as i64,
-                &device,
+                device,
             )?;
             position_ids.unsqueeze(0)?
         } else {
