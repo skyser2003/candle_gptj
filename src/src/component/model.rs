@@ -175,15 +175,19 @@ impl ModelLoader {
         buffer
     }
 
-    pub fn forward(&mut self, input_ids: &Tensor) -> Result<Tensor> {
-        let hidden_states = self.model.transformer.forward(
-            Some(&input_ids),
+    pub fn forward(
+        &mut self,
+        input_ids: Option<&Tensor>,
+        input_embeds: Option<Tensor>,
+    ) -> Result<Tensor> {
+        let (hidden_states, past_key_values) = self.model.transformer.forward(
+            input_ids,
             None,
             None,
             None,
             None,
             None,
-            None,
+            input_embeds,
             Some(false),
             false,
             false,
@@ -207,7 +211,7 @@ impl ModelLoader {
 
         let input_ids = Tensor::new(tokens, &self.model.device)?;
 
-        let lm_logits = self.forward(&input_ids)?;
+        let lm_logits = self.forward(Some(&input_ids), None)?;
 
         let logits = lm_logits.argmax(D::Minus1)?;
         let logits = logits.to_vec2::<u32>()?;
@@ -342,7 +346,7 @@ impl CoreModel {
     fn forward(
         &mut self,
         input_ids: Option<&Tensor>,
-        past_key_values: Option<Vec<Vec<Option<Tensor>>>>,
+        past_key_values: Option<Vec<(&Tensor, &Tensor)>>,
         attention_mask: Option<&Tensor>,
         token_type_ids: Option<&Tensor>,
         position_ids: Option<Tensor>,
@@ -351,7 +355,7 @@ impl CoreModel {
         use_cache: Option<bool>,
         output_attentions: bool,
         output_hidden_states: bool,
-    ) -> Result<Tensor> {
+    ) -> Result<(Tensor, Vec<(Tensor, Tensor)>)> {
         let use_cache = use_cache.unwrap_or(self.config.use_cache);
 
         let (input_shape, batch_size, device) = if input_ids.is_some() && input_embeds.is_some() {
@@ -382,14 +386,19 @@ impl CoreModel {
             None
         };
 
-        let (past_length, past_key_values) = if past_key_values.is_none() {
-            let past_length = 0usize;
-            let past_key_values: Vec<Vec<Option<Tensor>>> = vec![vec![]; self.config.n_layer];
+        let (past_length, past_key_values) = if let Some(past_key_values) = past_key_values {
+            let past_length = past_key_values[0].0.dim(D::Minus2)?;
 
-            (past_length, past_key_values)
+            (
+                past_length,
+                past_key_values
+                    .into_iter()
+                    .map(|layers_past| Some(layers_past))
+                    .collect::<Vec<_>>(),
+            )
         } else {
-            let past_key_values = past_key_values.unwrap();
-            let past_length = past_key_values[0][0].as_ref().unwrap().dim(D::Minus2)?;
+            let past_length = 0usize;
+            let past_key_values = vec![None; self.config.n_layer];
 
             (past_length, past_key_values)
         };
@@ -422,10 +431,10 @@ impl CoreModel {
 
         let head_mask = Self::get_head_mask(head_mask, self.config.n_layer, false, self.dtype);
 
-        let input_embeds = if input_embeds.is_none() {
-            self.word_token_embedding.forward(&input_ids.unwrap())?
+        let input_embeds = if let Some(input_embeds) = input_embeds {
+            input_embeds
         } else {
-            input_embeds.unwrap()
+            self.create_embed(input_ids.unwrap())?
         };
 
         let mut hidden_states = input_embeds;
@@ -451,7 +460,7 @@ impl CoreModel {
 
         for i in 0..self.hidden_layers.len() {
             let layer = &mut self.hidden_layers[i];
-            let layer_past = &past_key_values[i];
+            let layer_past = past_key_values[i];
 
             if self.is_parallel {
                 // TODO
@@ -497,7 +506,11 @@ impl CoreModel {
 
         hidden_states = hidden_states.reshape(output_shape)?;
 
-        Ok(hidden_states)
+        Ok((hidden_states, presents))
+    }
+
+    pub fn create_embed(&self, input_ids: &Tensor) -> Result<Tensor> {
+        self.word_token_embedding.forward(input_ids)
     }
 
     fn get_head_mask(
@@ -606,13 +619,13 @@ impl HiddenLayer {
         &mut self,
         hidden_states: &Tensor,
         position_ids: &Tensor,
-        layer_past: &[Option<Tensor>],
+        layer_past: Option<(&Tensor, &Tensor)>,
         attention_mask: &Option<Tensor>,
         head_mask: &Option<Tensor>,
         use_cache: bool,
         output_attentions: bool,
         device: &Device,
-    ) -> Result<(Tensor, Option<Tensor>, Option<Tensor>)> {
+    ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
         let residual = hidden_states;
         let hidden_states = self.layer_norm.forward(&hidden_states)?;
         let (attn_output, present, attn_weights) = self.attention.forward(
@@ -704,13 +717,13 @@ impl Attention {
         &mut self,
         hidden_states: &Tensor,
         position_ids: &Tensor,
-        layer_past: &[Option<Tensor>],
+        layer_past: Option<(&Tensor, &Tensor)>,
         attention_mask: &Option<Tensor>,
         head_mask: &Option<Tensor>,
         use_cache: bool,
         output_attentions: bool,
         device: &Device,
-    ) -> Result<(Tensor, Option<Tensor>, Option<Tensor>)> {
+    ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
         let q = self.q.forward(&hidden_states)?;
         let k = self.k.forward(&hidden_states)?;
         let v = self.v.forward(&hidden_states)?;
@@ -759,9 +772,9 @@ impl Attention {
         let k = k.permute((0, 2, 1, 3))?;
         let q = q.permute((0, 2, 1, 3))?;
 
-        let (k, v) = if layer_past.len() != 0 {
-            let past_key = layer_past.get(0).unwrap().as_ref().unwrap();
-            let past_value = layer_past.get(1).unwrap().as_ref().unwrap();
+        let (k, v) = if let Some(layer_past) = layer_past {
+            let past_key = layer_past.0;
+            let past_value = layer_past.1;
 
             let k = Tensor::cat(&[past_key, &k], D::Minus2)?;
             let v = Tensor::cat(&[past_value, &v], D::Minus2)?;
@@ -775,18 +788,18 @@ impl Attention {
         let q = q.contiguous()?;
         let v = v.contiguous()?;
 
-        let present = if use_cache {
-            Some(k.to_dtype(hidden_states.dtype())?)
-        } else {
-            None
-        };
-
         let (attn_output, attn_weights) =
             self.get_attention(&q, &k, &v, attention_mask, head_mask)?;
 
         let attn_output = Self::merge_heads(&attn_output, self.num_heads, self.head_size)?;
         let attn_output = self.out.forward(&attn_output)?;
         let attn_output = self.resid_dropout.forward(&attn_output, false)?;
+
+        let present = if use_cache {
+            Some((k.to_dtype(hidden_states.dtype())?, v))
+        } else {
+            None
+        };
 
         if output_attentions {
             Ok((attn_output, present, Some(attn_weights)))
