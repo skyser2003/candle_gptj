@@ -941,9 +941,11 @@ impl Attention {
     }
 
     fn get_embed_positions(&mut self, input: &Tensor) -> Result<Tensor> {
-        self.embed_positions = self.embed_positions.to_device(input.device())?;
+        if !self.embed_positions.device().same_device(input.device()) {
+            self.embed_positions = self.embed_positions.to_device(input.device())?;
+        }
 
-        self.embed_positions.repeat((input.shape().dims()[0], 1, 1))
+        self.embed_positions.repeat((input.dim(0)?, 1, 1))
     }
 
     fn apply_rotary_pos_emb(tensor: &Tensor, sin: &Tensor, cos: &Tensor) -> Result<Tensor> {
