@@ -770,11 +770,20 @@ impl Attention {
 
             (k, q)
         } else {
-            let k_rot = k.narrow(3, 0, self.rotary_dim)?.contiguous()?;
-            let k_pass = k.narrow(3, self.rotary_dim, k.dim(3)? - self.rotary_dim)?;
+            let dim_index = 3;
+            let k_rot = k.narrow(dim_index, 0, self.rotary_dim)?.contiguous()?;
+            let k_pass = k.narrow(
+                dim_index,
+                self.rotary_dim,
+                k.dim(dim_index)? - self.rotary_dim,
+            )?;
 
-            let q_rot = q.narrow(3, 0, self.rotary_dim)?.contiguous()?;
-            let q_pass = q.narrow(3, self.rotary_dim, q.dim(3)? - self.rotary_dim)?;
+            let q_rot = q.narrow(dim_index, 0, self.rotary_dim)?.contiguous()?;
+            let q_pass = q.narrow(
+                dim_index,
+                self.rotary_dim,
+                q.dim(dim_index)? - self.rotary_dim,
+            )?;
 
             let k_rot = Self::apply_rotary_pos_emb(&k_rot, &sin, &cos)?;
             let q_rot = Self::apply_rotary_pos_emb(&q_rot, &sin, &cos)?;
