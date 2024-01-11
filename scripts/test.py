@@ -83,7 +83,7 @@ def main():
     parser.add_argument(
         "--model_dir", required=True, help="Directory containing the model to test"
     )
-    parser.add_argument("--device", required=True, default="cpu", help="Device")
+    parser.add_argument("--device", required=False, default="cpu", help="Device")
 
     args = parser.parse_args()
 
