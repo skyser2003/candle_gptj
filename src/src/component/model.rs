@@ -227,13 +227,13 @@ impl ModelLoader {
         return Ok(outputs);
 
         // TODO top_k, etc
-        let next_logits = lm_logits.narrow(1, lm_logits.dim(1)? - 2, 1)?.squeeze(1)?;
+        let next_logits = lm_logits.narrow(1, lm_logits.dim(1)? - 1, 1)?.squeeze(1)?;
 
         let mut output_ids = vec![];
 
         for i in 0..batch_size {
             // TODO LogitsProcessor saved per batch, not every loop
-            let mut logits_proc = &mut logits_procs[i];
+            let logits_proc = &mut logits_procs[i];
             let next_logit = next_logits.i(i)?;
 
             let gen_id = logits_proc.sample(&next_logit)?;
