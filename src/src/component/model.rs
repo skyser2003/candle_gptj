@@ -11,11 +11,11 @@ use safetensors::SafeTensors;
 use tokenizers::Tokenizer;
 
 pub struct ModelLoader {
-    model: ModelWrapper,
+    model: CausalModel,
     tokenizer: Tokenizer,
 }
 
-pub struct ModelWrapper {
+pub struct CausalModel {
     pub buffer: memmap2::Mmap,
     pub model_filename: PathBuf,
     pub device: Device,
@@ -147,7 +147,7 @@ impl ModelLoader {
         let core_model = CoreModel::new(&vb, dtype, dtype_min, &device, &config);
         let lm_head = linear(config.n_embd, config.vocab_size, vb.pp("lm_head")).unwrap();
 
-        let model = ModelWrapper {
+        let model = CausalModel {
             model_filename,
             buffer,
             device: device.clone(),
@@ -275,7 +275,7 @@ impl ModelLoader {
     }
 }
 
-impl ModelWrapper {
+impl CausalModel {
     fn tensors(&self) -> SafeTensors {
         let tensors = SafeTensors::deserialize(&self.buffer).unwrap();
 
