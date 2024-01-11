@@ -1,8 +1,8 @@
 use std::time::Instant;
 use std::{collections::HashMap, fs::File, path::PathBuf};
 
-use candle_core::IndexOp;
 use candle_core::{DType, Device, Result, Tensor, D};
+use candle_core::{IndexOp, Shape};
 use candle_nn::{linear, linear_no_bias, Activation};
 use candle_nn::{ops::softmax, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder};
 use candle_transformers::generation::LogitsProcessor;
@@ -378,7 +378,8 @@ impl CoreModel {
 
             (input_shape, batch_size, device)
         } else if let Some(input_embeds) = &input_embeds {
-            let input_shape = input_embeds.shape().clone();
+            let input_shape =
+                Shape::from_dims(&input_embeds.dims()[0..input_embeds.dims().len() - 1]);
             let batch_size = input_embeds.dim(0)?;
             let device = input_embeds.device().clone();
 
