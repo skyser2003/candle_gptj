@@ -121,3 +121,24 @@ async fn candle_matmul_test() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn candle_contiguous_test() -> anyhow::Result<()> {
+    use candle_core::{Device, Tensor};
+
+    let device = Device::Cpu;
+
+    let tensor = Tensor::new(&[[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]], &device)?;
+    println!("{}", tensor.is_contiguous());
+    assert_eq!(tensor.is_contiguous(), true);
+
+    let tensor = tensor.unsqueeze(1)?;
+    println!("{}", tensor.is_contiguous());
+    assert_eq!(tensor.is_contiguous(), true);
+
+    let tensor = tensor.repeat((2, 4))?;
+    println!("{}", tensor.is_contiguous());
+    assert_eq!(tensor.is_contiguous(), false);
+
+    Ok(())
+}
