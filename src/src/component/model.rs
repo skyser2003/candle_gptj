@@ -749,12 +749,10 @@ impl Attention {
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
         let qkv = self.qkv.forward(&hidden_states)?;
 
-        let q = qkv.narrow(D::Minus1, 0, self.embed_size)?;
-        let k = qkv.narrow(D::Minus1, self.embed_size, self.embed_size)?;
+        let qk = qkv.narrow(D::Minus1, 0, self.embed_size * 2)?;
         let v = qkv.narrow(D::Minus1, self.embed_size * 2, self.embed_size)?;
 
-        let q = Self::split_heads(&q, self.num_heads, self.head_size, true)?;
-        let k = Self::split_heads(&k, self.num_heads, self.head_size, true)?;
+        let qk = Self::split_heads(&qk, self.num_heads * 2, self.head_size, true)?;
         let v = Self::split_heads(&v, self.num_heads, self.head_size, false)?;
 
         let embed_positions = self.get_embed_positions(position_ids)?;
@@ -767,44 +765,35 @@ impl Attention {
         let sincos = embed_positions.gather(&repeated_position_ids, 1)?;
         let sincos_half_count = sincos.dim(D::Minus1)? / 2;
         let sin = sincos.narrow(D::Minus1, 0, sincos_half_count)?;
-        let cos = sincos.narrow(
-            D::Minus1,
-            sincos_half_count,
-            sincos.dim(D::Minus1)? - sincos_half_count,
-        )?;
+        let cos = sincos.narrow(D::Minus1, sincos_half_count, sincos_half_count)?;
 
-        let (k, q) = if self.rotary_dim == 0 {
-            let k = Self::apply_rotary_pos_emb(&k, &sin, &cos)?;
-            let q = Self::apply_rotary_pos_emb(&q, &sin, &cos)?;
+        let qk = if self.rotary_dim == 0 {
+            let qk = Self::apply_rotary_pos_emb(&qk, &sin, &cos)?;
 
-            (k, q)
+            qk
         } else {
             let dim_index = 3;
-            let k_rot = k.narrow(dim_index, 0, self.rotary_dim)?.contiguous()?;
-            let k_pass = k.narrow(
+            let qk_rot = qk.narrow(dim_index, 0, self.rotary_dim)?.contiguous()?;
+            let qk_pass = qk.narrow(
                 dim_index,
                 self.rotary_dim,
-                k.dim(dim_index)? - self.rotary_dim,
+                qk.dim(dim_index)? - self.rotary_dim,
             )?;
 
-            let q_rot = q.narrow(dim_index, 0, self.rotary_dim)?.contiguous()?;
-            let q_pass = q.narrow(
-                dim_index,
-                self.rotary_dim,
-                q.dim(dim_index)? - self.rotary_dim,
-            )?;
+            let qk_rot = Self::apply_rotary_pos_emb(&qk_rot, &sin, &cos)?;
 
-            let k_rot = Self::apply_rotary_pos_emb(&k_rot, &sin, &cos)?;
-            let q_rot = Self::apply_rotary_pos_emb(&q_rot, &sin, &cos)?;
+            let qk = Tensor::cat(&[qk_rot, qk_pass], D::Minus1)?;
 
-            let k = Tensor::cat(&[k_rot, k_pass], D::Minus1)?;
-            let q = Tensor::cat(&[q_rot, q_pass], D::Minus1)?;
-
-            (k, q)
+            qk
         };
 
-        let k = k.permute((0, 2, 1, 3))?;
-        let q = q.permute((0, 2, 1, 3))?;
+        let qk = qk.permute((0, 2, 1, 3))?;
+
+        let qk_dim = 1;
+        let qk_size = qk.dim(qk_dim)? / 2;
+
+        let q = qk.narrow(qk_dim, 0, qk_size)?;
+        let k = qk.narrow(qk_dim, qk_size, qk_size)?;
 
         let (k, v) = if let Some(layer_past) = layer_past {
             let past_key = layer_past.0;
