@@ -3,7 +3,7 @@ use std::{collections::HashMap, fs::File, path::PathBuf};
 
 use candle_core::{DType, Device, Result, Tensor, D};
 use candle_core::{IndexOp, Shape};
-use candle_nn::{linear, linear_no_bias, Activation};
+use candle_nn::{linear, Activation};
 use candle_nn::{ops::softmax, Dropout, Embedding, LayerNorm, Linear, Module, VarBuilder};
 use candle_transformers::generation::LogitsProcessor;
 use memmap2::{Mmap, MmapOptions};
@@ -81,13 +81,12 @@ pub struct HiddenLayer {
 }
 
 pub struct Attention {
-    pub q: Linear,
-    pub k: Linear,
-    pub v: Linear,
+    pub qkv: Linear,
     pub out: Linear,
     pub num_heads: usize,
     pub head_size: usize,
     pub rotary_dim: usize,
+    pub embed_size: usize,
     pub scale_attn: Tensor,
     pub bias: Tensor,
     pub embed_positions: Tensor,
@@ -680,10 +679,19 @@ impl Attention {
         resid_pdrop: f32,
         device: &Device,
     ) -> Attention {
-        let q = linear_no_bias(embed_size, embed_size, vb.pp("q_proj")).unwrap();
-        let k = linear_no_bias(embed_size, embed_size, vb.pp("k_proj")).unwrap();
-        let v = linear_no_bias(embed_size, embed_size, vb.pp("v_proj")).unwrap();
-        let out = linear_no_bias(embed_size, embed_size, vb.pp("out_proj")).unwrap();
+        let embed_shape = (embed_size, embed_size);
+        let qkv_weight = Tensor::cat(
+            &[
+                vb.get(embed_shape, "q_proj.weight").unwrap(),
+                vb.get(embed_shape, "k_proj.weight").unwrap(),
+                vb.get(embed_shape, "v_proj.weight").unwrap(),
+            ],
+            0,
+        )
+        .unwrap();
+
+        let qkv = Linear::new(qkv_weight, None);
+        let out = Linear::new(vb.get(embed_shape, "out_proj.weight").unwrap(), None);
 
         let mut bias_vec = vec![0u8; max_pos_embeddings * max_pos_embeddings];
 
@@ -715,13 +723,12 @@ impl Attention {
         let resid_dropout = Dropout::new(resid_pdrop);
 
         Attention {
-            q,
-            k,
-            v,
+            qkv,
             out,
             num_heads,
             head_size,
             rotary_dim,
+            embed_size,
             bias,
             scale_attn,
             embed_positions,
@@ -740,9 +747,13 @@ impl Attention {
         use_cache: bool,
         output_attentions: bool,
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
-        let q = self.q.forward(&hidden_states)?;
-        let k = self.k.forward(&hidden_states)?;
-        let v = self.v.forward(&hidden_states)?;
+        let qkv = self.qkv.forward(&hidden_states)?;
+
+        println!("{:?}", qkv.shape());
+
+        let q = qkv.narrow(D::Minus1, 0, self.embed_size)?;
+        let k = qkv.narrow(D::Minus1, self.embed_size, self.embed_size)?;
+        let v = qkv.narrow(D::Minus1, self.embed_size * 2, self.embed_size)?;
 
         let q = Self::split_heads(&q, self.num_heads, self.head_size, true)?;
         let k = Self::split_heads(&k, self.num_heads, self.head_size, true)?;
