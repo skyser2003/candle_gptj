@@ -891,7 +891,7 @@ impl Attention {
         let mut attn_weights = self.attn_dropout.forward(&attn_weights, false)?;
 
         if let Some(head_mask) = head_mask {
-            attn_weights = (attn_weights * head_mask)?
+            attn_weights = attn_weights.mul(head_mask)?
         }
 
         let attn_output = attn_weights.matmul(&value)?;
