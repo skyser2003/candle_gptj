@@ -837,9 +837,9 @@ impl Attention {
         let num_dims = attn_output.dims().len();
 
         let attn_output = if num_dims == 5 {
-            attn_output.permute((0, 1, 3, 2, 4))?.contiguous()?
+            attn_output.permute((0, 1, 3, 2, 4))?
         } else if num_dims == 4 {
-            attn_output.permute((0, 2, 1, 3))?.contiguous()?
+            attn_output.permute((0, 2, 1, 3))?
         } else {
             panic!(
                 "Input tensor rank should be one of [4, 5], but is: {}",
