@@ -749,8 +749,6 @@ impl Attention {
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
         let qkv = self.qkv.forward(&hidden_states)?;
 
-        println!("{:?}", qkv.shape());
-
         let q = qkv.narrow(D::Minus1, 0, self.embed_size)?;
         let k = qkv.narrow(D::Minus1, self.embed_size, self.embed_size)?;
         let v = qkv.narrow(D::Minus1, self.embed_size * 2, self.embed_size)?;
