@@ -6,7 +6,7 @@ use clap::Parser;
 
 use candle_core::{backend::BackendDevice, CudaDevice, Device};
 
-use component::model::ModelLoader;
+use component::model_candle::ModelLoader;
 use tokio::time::Instant;
 
 #[derive(Parser, Debug)]

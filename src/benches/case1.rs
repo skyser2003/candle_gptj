@@ -4,7 +4,7 @@ use anyhow::anyhow;
 use candle_core::{backend::BackendDevice, CudaDevice, Device};
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use candle_gptj::component::model::ModelLoader;
+use candle_gptj::component::model_candle::ModelLoader;
 
 fn bench(c: &mut Criterion) {
     c.bench_function("case1", |b| {
