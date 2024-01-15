@@ -715,9 +715,13 @@ impl Attention {
         let scale_attn = Tensor::new(&[head_size as f32], device).unwrap();
         let scale_attn = scale_attn.sqrt().unwrap();
 
-        let embed_positions =
-            Self::create_sinusoidal_positions(max_pos_embeddings, pos_embed_dimension, device)
-                .unwrap();
+        let embed_positions = Self::create_sinusoidal_positions(
+            max_pos_embeddings,
+            pos_embed_dimension,
+            device,
+            qkv.weight().dtype(),
+        )
+        .unwrap();
 
         let attn_dropout = Dropout::new(attn_pdrop);
         let resid_dropout = Dropout::new(resid_pdrop);
@@ -901,14 +905,19 @@ impl Attention {
         num_pos: usize,
         dimension: usize,
         device: &Device,
+        dtype: DType,
     ) -> Result<Tensor> {
         let inv_freq = (0..dimension)
             .step_by(2)
             .map(|x| 1.0 / (10000f32.powf(x as f32 / dimension as f32)))
             .collect::<Vec<_>>();
 
-        let pos_ids = Tensor::arange(0f32, num_pos as f32, device)?.unsqueeze(1)?;
-        let inv_freq = Tensor::new(inv_freq, device)?.unsqueeze(0)?;
+        let pos_ids = Tensor::arange(0f32, num_pos as f32, device)?
+            .unsqueeze(1)?
+            .to_dtype(dtype)?;
+        let inv_freq = Tensor::new(inv_freq, device)?
+            .unsqueeze(0)?
+            .to_dtype(dtype)?;
 
         let sinusoid_inp = pos_ids.matmul(&inv_freq)?;
 
