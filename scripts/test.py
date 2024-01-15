@@ -22,6 +22,13 @@ def get_model(model_dir: str, device: str):
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
 
+    # Hot loading
+    hot_input_ids = tokenizer.batch_encode_plus(["Hot loading"], return_tensors="pt")[
+        "input_ids"
+    ]
+    hot_input_ids = hot_input_ids.to(model.device)
+    model.forward(hot_input_ids)
+
     end_time = time.time()
 
     print(f"Loading model done, {end_time - start_time}s")
@@ -33,13 +40,6 @@ def get_model(model_dir: str, device: str):
 def test_single(
     model: GPTJForCausalLM, tokenizer: PreTrainedTokenizer, inputs: list[str]
 ):
-    # Hot loading
-    hot_input_ids = tokenizer.batch_encode_plus(["Hot loading"], return_tensors="pt")[
-        "input_ids"
-    ]
-    hot_input_ids = hot_input_ids.to(model.device)
-    model.forward(hot_input_ids)
-
     start_time = time.time()
 
     input_ids = tokenizer.batch_encode_plus(inputs, return_tensors="pt")["input_ids"]
