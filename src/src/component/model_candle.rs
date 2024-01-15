@@ -10,6 +10,8 @@ use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
 use tokenizers::Tokenizer;
 
+use super::model_base::GPTJConfig;
+
 pub struct ModelLoader {
     model: CausalModel,
     tokenizer: Tokenizer,
@@ -19,52 +21,13 @@ pub struct CausalModel {
     pub buffer: memmap2::Mmap,
     pub model_filename: PathBuf,
     pub device: Device,
-    pub config: Config,
+    pub config: GPTJConfig,
     pub transformer: CoreModel,
     pub lm_head: Linear,
 }
 
-#[derive(serde::Deserialize, Debug, Clone)]
-pub struct Config {
-    pub _name_or_path: Option<String>,
-    pub activation_function: String,
-    pub architectures: Vec<String>,
-    pub attn_pdrop: f32,
-    pub bos_token_id: usize,
-    pub embd_pdrop: f32,
-    pub eos_token_id: usize,
-    pub initializer_range: f32,
-    pub layer_norm_epsilon: f64,
-    pub model_type: String,
-    pub n_embd: usize,
-    pub n_head: usize,
-    pub n_inner: Option<usize>,
-    pub n_layer: usize,
-    pub n_positions: usize,
-    pub pad_token_id: Option<usize>,
-    pub quantization_config: Option<QuantizationConfig>,
-    pub resid_pdrop: f32,
-    pub rotary_dim: Option<usize>,
-    pub rotary_pct: Option<f32>,
-    pub scale_attn_weights: bool,
-    pub tie_word_embeddings: bool,
-    pub torch_dtype: Option<String>,
-    pub transformers_version: String,
-    pub use_cache: bool,
-    pub vocab_size: usize,
-}
-
-#[derive(serde::Deserialize, Debug, Clone)]
-pub struct QuantizationConfig {
-    pub bits: i32,
-    pub group_size: i32,
-    pub quant_method: String,
-    pub version: String,
-    pub zero_point: bool,
-}
-
 pub struct CoreModel {
-    pub config: Config,
+    pub config: GPTJConfig,
     pub dtype: DType,
     pub dtype_min: f32,
     pub word_token_embedding: Embedding,
@@ -116,7 +79,8 @@ impl ModelLoader {
         let model_dir = std::path::Path::new(model_dir);
 
         let config_filename = model_dir.join("config.json");
-        let config: Config = serde_json::from_reader(File::open(config_filename).unwrap()).unwrap();
+        let config: GPTJConfig =
+            serde_json::from_reader(File::open(config_filename).unwrap()).unwrap();
 
         let model_filename = model_dir.join("model.safetensors");
         let buffer = Self::load_model(&model_filename);
@@ -269,7 +233,7 @@ impl ModelLoader {
         &self.tokenizer
     }
 
-    pub fn get_config(&self) -> &Config {
+    pub fn get_config(&self) -> &GPTJConfig {
         &self.model.config
     }
 }
@@ -288,7 +252,7 @@ impl CoreModel {
         dtype: DType,
         dtype_min: f32,
         device: &Device,
-        config: &Config,
+        config: &GPTJConfig,
     ) -> CoreModel {
         let tf_vb = vb.pp("transformer");
 
