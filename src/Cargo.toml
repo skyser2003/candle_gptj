@@ -7,7 +7,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
-burn = { version = "0.11.1", features = ["tch", "candle"] }
 candle-core = { version = "0.3.2" }
 candle-nn = { version = "0.3.2" }
 candle-transformers = { version = "0.3.2" }
