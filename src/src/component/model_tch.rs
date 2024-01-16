@@ -435,7 +435,7 @@ impl CoreModel {
             hidden_states = (hidden_states + token_type_embeds);
         }
 
-        hidden_states.dropout_(self.config.embd_pdrop as f64, false);
+        let _ = hidden_states.dropout_(self.config.embd_pdrop as f64, false);
 
         let mut partial_output_shape = Vec::new();
 
@@ -806,7 +806,7 @@ impl Attention {
 
         let attn_output = Self::merge_heads(&attn_output, self.num_heads, self.head_size);
         let mut attn_output = self.out.forward(&attn_output);
-        attn_output.dropout_(self.resid_pdrop as f64, false);
+        let _ = attn_output.dropout_(self.resid_pdrop as f64, false);
 
         let present = if use_cache {
             Some((k.to_kind(hidden_states.kind()), v))
@@ -873,7 +873,7 @@ impl Attention {
         }
 
         let mut attn_weights = attn_weights.softmax(-1, value.kind());
-        attn_weights.dropout_(self.attn_pdrop as f64, false);
+        let _ = attn_weights.dropout_(self.attn_pdrop as f64, false);
 
         if let Some(head_mask) = head_mask {
             attn_weights = attn_weights.mul(head_mask)
@@ -1004,9 +1004,9 @@ impl MLP {
 
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
         let mut input = self.fc_in.forward(&input);
-        input.gelu_("none");
+        let _ = input.gelu_("none");
         let mut input = self.fc_out.forward(&input);
-        input.dropout_(self.resid_pdrop as f64, false);
+        let _ = input.dropout_(self.resid_pdrop as f64, false);
 
         Ok(input)
     }
