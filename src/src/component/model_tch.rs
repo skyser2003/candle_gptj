@@ -355,7 +355,7 @@ impl CoreModel {
 
                 let input_shape = input_ids.size();
                 let input_ids = input_ids.reshape([-1, *input_shape.last().unwrap()]);
-                let batch_size = input_shape[0];
+                let batch_size = input_ids.size()[0];
 
                 (input_shape, batch_size, device)
             }
