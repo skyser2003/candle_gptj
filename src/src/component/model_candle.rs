@@ -125,7 +125,7 @@ impl ModelLoader {
 
         let mut instance = Self { model, tokenizer };
 
-        let _ = instance.inference(&["hot loading"]);
+        let _ = instance.inference(&["Hot loading"]);
 
         let end_time = Instant::now();
 
