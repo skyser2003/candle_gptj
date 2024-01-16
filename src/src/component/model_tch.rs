@@ -1,9 +1,13 @@
+use std::ops::Mul;
 use std::time::Instant;
 use std::{collections::HashMap, fs::File, path::PathBuf};
 
 use memmap2::{Mmap, MmapOptions};
 use safetensors::SafeTensors;
-use tch::nn::{Embedding, LayerNorm, Linear, Module, VarStore};
+use tch::nn::{
+    self, embedding, layer_norm, linear, Embedding, EmbeddingConfig, LayerNorm, LayerNormConfig,
+    Linear, LinearConfig, Module, VarStore,
+};
 use tch::{Device, Kind, Result, Tensor};
 use tokenizers::Tokenizer;
 
@@ -30,7 +34,6 @@ pub struct CoreModel {
     pub word_token_embedding: Embedding,
     pub hidden_layers: Vec<HiddenLayer>,
     pub layernorm_final: LayerNorm,
-    pub drop: Dropout,
     pub is_parallel: bool,
 }
 
@@ -50,15 +53,14 @@ pub struct Attention {
     pub scale_attn: Tensor,
     pub bias: Tensor,
     pub embed_positions: Tensor,
-    pub attn_dropout: Dropout,
-    pub resid_dropout: Dropout,
+    pub attn_pdrop: f32,
+    pub resid_pdrop: f32,
 }
 
 pub struct MLP {
     pub fc_in: Linear,
     pub fc_out: Linear,
-    pub activation: Activation,
-    pub dropout: Dropout,
+    pub resid_pdrop: f32,
 }
 
 pub struct CausalOutput {
@@ -100,31 +102,36 @@ impl ModelLoader {
 
         let (dtype, dtype_min) = *dtype_map.get(torch_dtype.as_str()).unwrap();
 
-        let mut vs = VarStore::new(Device::Cpu);
+        let vs = VarStore::new(Device::Cpu);
+        let vr = &vs.root();
+
+        let core_model = CoreModel::new(vr, &dtype, dtype_min, &device, &config);
+        let lm_head = linear(
+            vr / "lm_head",
+            config.n_embd as i64,
+            config.vocab_size as i64,
+            LinearConfig {
+                ..Default::default()
+            },
+        );
 
         let vb = safetensors::SafeTensors::deserialize(&buffer).unwrap();
 
-        let core_model = CoreModel::new(&vb, dtype, dtype_min, &device, &config);
+        for (name, var) in vs.variables().iter_mut() {
+            let view = vb.tensor(&name).unwrap();
+            let size = view.shape().iter().map(|&x| x as i64).collect::<Vec<_>>();
 
-        let lm_head_weight_view = vb.tensor("lm_head.weight").unwrap();
-        let lm_head_bias_view = vb.tensor("lm_head.bias").unwrap();
-        let head_size = lm_head_weight_view
-            .shape()
-            .iter()
-            .map(|&x| x as i64)
-            .collect::<Vec<_>>();
-        let bias_size = lm_head_bias_view
-            .shape()
-            .iter()
-            .map(|&x| x as i64)
-            .collect::<Vec<_>>();
-
-        let lm_head_weight = Tensor::from_data_size(lm_head_weight_view.data(), &head_size, dtype);
-        let lm_head_bias = Tensor::from_data_size(lm_head_bias_view.data(), &bias_size, dtype);
-        let lm_head = Linear {
-            ws: lm_head_weight,
-            bs: Some(lm_head_bias),
-        };
+            let kind: Kind = match view.dtype() {
+                safetensors::Dtype::F32 => Kind::Float,
+                safetensors::Dtype::F16 => Kind::Half,
+                safetensors::Dtype::BF16 => Kind::BFloat16,
+                all => panic!("Unsupported type {:?}", all),
+            };
+            let tensor =
+                unsafe { Tensor::from_blob(view.data().as_ptr(), &size, &[], kind, *device) };
+            let _ = var.requires_grad_(false);
+            var.copy_(&tensor);
+        }
 
         let model = CausalModel {
             model_filename,
@@ -183,62 +190,51 @@ impl ModelLoader {
             .model
             .lm_head
             .forward(&output.last_hidden_state)
-            .to_dtype(DType::F32);
+            .to_kind(Kind::Float);
 
-        lm_logits
+        Ok(lm_logits)
     }
 
     pub fn inference(&mut self, inputs: &[&str]) -> Result<Vec<String>> {
         let encodings = self.tokenizer.encode_batch(inputs.to_vec(), true).unwrap();
         let tokens = encodings
             .iter()
-            .map(|enc| enc.get_ids())
+            .map(|enc| {
+                enc.get_ids()
+                    .iter()
+                    .map(|val| *val as i64)
+                    .collect::<Vec<_>>()
+            })
+            .flatten()
             .collect::<Vec<_>>();
 
-        let input_ids = Tensor::new(tokens, &self.model.device)?;
+        let input_ids = Tensor::from_slice(&tokens).reshape([encodings.len() as i64, -1]);
 
         let lm_logits = self.forward(Some(&input_ids), None)?;
 
-        let logits = lm_logits.argmax(D::Minus1)?;
-        let logits = logits.to_vec2::<u32>()?;
+        let logits = lm_logits.argmax(-1, false);
+
+        let logits = Vec::<Vec<i64>>::try_from(logits).unwrap();
+        let logits = logits
+            .iter()
+            .map(|nested_vec| {
+                nested_vec
+                    .into_iter()
+                    .map(|token| *token as u32)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
 
         let logits = logits
             .iter()
             .map(|nested_vec| nested_vec.as_slice())
             .collect::<Vec<_>>();
 
-        // TODO LogitsProcessor saved per batch, not every loop
-        let batch_size = inputs.len();
-        let mut logits_procs = (0..batch_size)
-            .map(|_| LogitsProcessor::new(0, None, Some(0.3)))
-            .collect::<Vec<_>>();
+        // TODO: post processing (top_k, top_p, etc)
 
         let outputs = self.tokenizer.decode_batch(&logits, true).unwrap();
+
         return Ok(outputs);
-
-        // TODO top_k, etc
-        let next_logits = lm_logits.narrow(1, lm_logits.dim(1)? - 1, 1)?.squeeze(1)?;
-
-        let mut output_ids = vec![];
-
-        for i in 0..batch_size {
-            // TODO LogitsProcessor saved per batch, not every loop
-            let logits_proc = &mut logits_procs[i];
-            let next_logit = next_logits.i(i)?;
-
-            let gen_id = logits_proc.sample(&next_logit)?;
-
-            output_ids.push([gen_id]);
-        }
-
-        let output_ids = output_ids
-            .iter()
-            .map(|ids| ids.as_slice())
-            .collect::<Vec<_>>();
-
-        let outputs = self.tokenizer.decode_batch(&output_ids, true).unwrap();
-
-        Ok(outputs)
     }
 
     pub fn get_tensors(&self) -> SafeTensors {
@@ -264,22 +260,24 @@ impl CausalModel {
 
 impl CoreModel {
     fn new(
-        vb: &VarBuilder,
-        dtype: DType,
+        vr: &nn::Path,
+        dtype: &Kind,
         dtype_min: f32,
         device: &Device,
         config: &GPTJConfig,
     ) -> CoreModel {
-        let tf_vb = vb.pp("transformer");
+        let tf_vb = &(vr / ("transformer"));
 
-        let word_token_embedding = Embedding::new(
-            tf_vb
-                .get((config.vocab_size, config.n_embd), "wte.weight")
-                .unwrap(),
-            config.n_embd,
+        let word_token_embedding = embedding(
+            tf_vb / "wte",
+            config.vocab_size as i64,
+            config.n_embd as i64,
+            EmbeddingConfig {
+                ..Default::default()
+            },
         );
 
-        let hidden_layers_vb = tf_vb.pp("h");
+        let hidden_layers_vb = tf_vb / "h";
         let inner_size = config.n_inner.unwrap_or(4 * config.n_embd);
         let rotary_dim = config.rotary_dim.unwrap_or(0);
         let pos_embed_dimension = if rotary_dim == 0 {
@@ -290,9 +288,9 @@ impl CoreModel {
 
         let layers = (0..config.n_layer)
             .map(|i| {
-                let layer_vb = hidden_layers_vb.pp(&format!("{}", i));
+                let layer_vb = &hidden_layers_vb / i;
                 let layer = HiddenLayer::new(
-                    layer_vb,
+                    &layer_vb,
                     config.n_embd,
                     inner_size,
                     config.n_head,
@@ -309,22 +307,23 @@ impl CoreModel {
             })
             .collect::<Vec<_>>();
 
-        let layernorm_final = LayerNorm::new(
-            tf_vb.get(config.n_embd, "ln_f.weight").unwrap(),
-            tf_vb.get(config.n_embd, "ln_f.bias").unwrap(),
-            config.layer_norm_epsilon,
+        let layernorm_final = layer_norm(
+            tf_vb / "ln_f",
+            vec![config.n_embd as i64],
+            nn::LayerNormConfig {
+                cudnn_enabled: device.is_cuda(),
+                eps: config.layer_norm_epsilon,
+                ..Default::default()
+            },
         );
-
-        let drop = Dropout::new(config.embd_pdrop);
 
         Self {
             config: config.clone(),
-            dtype,
+            dtype: *dtype,
             dtype_min,
             word_token_embedding,
             hidden_layers: layers,
             layernorm_final,
-            drop,
             is_parallel: false,
         }
     }
@@ -354,18 +353,18 @@ impl CoreModel {
 
                 let device = input_ids.device();
 
-                let input_shape = input_ids.shape().clone();
-                let input_ids = input_ids.reshape(((), input_ids.dim(D::Minus1)?))?;
-                let batch_size = input_ids.dim(0)?;
+                let input_shape = input_ids.size();
+                let input_ids = input_ids.reshape([-1, *input_shape.last().unwrap()]);
+                let batch_size = input_shape[0];
 
                 (input_shape, batch_size, device)
             }
             (None, Some(input_embeds)) => {
                 let device = input_embeds.device();
 
-                let input_shape =
-                    Shape::from_dims(&input_embeds.dims()[0..input_embeds.dims().len() - 1]);
-                let batch_size = input_embeds.dim(0)?;
+                let input_shape = input_embeds.size();
+                let input_shape = Vec::from(&input_shape[0..input_shape.len() - 1]);
+                let batch_size = input_shape[0];
 
                 (input_shape, batch_size, device)
             }
@@ -373,13 +372,13 @@ impl CoreModel {
         };
 
         let token_type_ids = if let Some(token_type_ids) = token_type_ids {
-            Some(token_type_ids.reshape(((), token_type_ids.dim(D::Minus1)?))?)
+            Some(token_type_ids.reshape([-1, *token_type_ids.size().last().unwrap()]))
         } else {
             None
         };
 
         let (past_length, past_key_values) = if let Some(past_key_values) = past_key_values {
-            let past_length = past_key_values[0].0.dim(D::Minus2)?;
+            let past_length = *past_key_values[0].0.size().last().unwrap();
 
             (
                 past_length,
@@ -389,19 +388,19 @@ impl CoreModel {
                     .collect::<Vec<_>>(),
             )
         } else {
-            let past_length = 0usize;
+            let past_length = 0i64;
             let past_key_values = vec![None; self.config.n_layer];
 
             (past_length, past_key_values)
         };
 
         let position_ids = if position_ids.is_none() {
-            let position_ids = Tensor::arange(
+            let position_ids = Tensor::arange_start(
                 past_length as i64,
-                *input_shape.dims().last().unwrap() as i64 + past_length as i64,
-                device,
-            )?;
-            position_ids.unsqueeze(0)?
+                *input_shape.last().unwrap() + past_length,
+                (Kind::Int64, device),
+            );
+            position_ids.unsqueeze(0)
         } else {
             position_ids.unwrap()
         };
@@ -411,10 +410,10 @@ impl CoreModel {
                 panic!("Batch size has to be defined and > 0");
             }
 
-            let attention_mask = attention_mask.reshape((batch_size, ()))?;
-            let attention_mask = attention_mask.unsqueeze(1)?.unsqueeze(1)?;
-            let attention_mask = attention_mask.to_dtype(self.dtype)?;
-            let attention_mask = ((1.0 - attention_mask)? * self.dtype_min as f64)?;
+            let attention_mask = attention_mask.reshape([batch_size, -1]);
+            let attention_mask = attention_mask.unsqueeze(1).unsqueeze(1);
+            let attention_mask = attention_mask.to_kind(self.dtype);
+            let attention_mask = (1.0 - attention_mask) * self.dtype_min as f64;
 
             Some(attention_mask)
         } else {
@@ -426,25 +425,25 @@ impl CoreModel {
         let input_embeds = if let Some(input_embeds) = input_embeds {
             input_embeds
         } else {
-            self.create_embed(input_ids.unwrap())?
+            self.create_embed(input_ids.unwrap())
         };
 
         let mut hidden_states = input_embeds;
 
         if let Some(token_type_ids) = token_type_ids {
-            let token_type_embeds = self.word_token_embedding.forward(&token_type_ids)?;
-            hidden_states = (hidden_states + token_type_embeds)?;
+            let token_type_embeds = self.word_token_embedding.forward(&token_type_ids);
+            hidden_states = (hidden_states + token_type_embeds);
         }
 
-        hidden_states = self.drop.forward(&hidden_states, false)?;
+        hidden_states.dropout_(self.config.embd_pdrop as f64, false);
 
         let mut partial_output_shape = Vec::new();
 
-        for i in input_shape.dims().iter().skip(1) {
+        for i in input_shape.iter().skip(1) {
             partial_output_shape.push(*i);
         }
 
-        partial_output_shape.push(hidden_states.dim(D::Minus1)?);
+        partial_output_shape.push(*hidden_states.size().last().unwrap());
 
         let mut presents = Vec::new();
         let mut all_self_attentions = Vec::new();
@@ -459,7 +458,7 @@ impl CoreModel {
             }
 
             if output_hidden_states {
-                all_hidden_states.push(hidden_states.clone());
+                all_hidden_states.push(hidden_states.shallow_clone());
             }
 
             let (local_hidden_states, present, attn_weights) = layer.forward(
@@ -487,15 +486,15 @@ impl CoreModel {
             }
         }
 
-        hidden_states = self.layernorm_final.forward(&hidden_states)?;
+        hidden_states = self.layernorm_final.forward(&hidden_states);
 
-        let output_shape_0 = hidden_states.dims().iter().product::<usize>()
-            / partial_output_shape.iter().product::<usize>();
+        let output_shape_0 = hidden_states.size().iter().product::<i64>()
+            / partial_output_shape.iter().product::<i64>();
 
         let mut output_shape = vec![output_shape_0];
         output_shape.append(&mut partial_output_shape);
 
-        hidden_states = hidden_states.reshape(output_shape)?;
+        hidden_states = hidden_states.reshape(output_shape);
 
         let output = CausalOutput {
             last_hidden_state: hidden_states,
@@ -507,7 +506,7 @@ impl CoreModel {
         Ok(output)
     }
 
-    pub fn create_embed(&self, input_ids: &Tensor) -> Result<Tensor> {
+    pub fn create_embed(&self, input_ids: &Tensor) -> Tensor {
         self.word_token_embedding.forward(input_ids)
     }
 
@@ -515,14 +514,14 @@ impl CoreModel {
         head_mask: Option<&Tensor>,
         num_hidden_layers: usize,
         is_attention_chunkced: bool,
-        dtype: DType,
+        dtype: Kind,
     ) -> Option<Tensor> {
         if let Some(head_mask) = head_mask {
             let mut head_mask =
-                Self::convert_head_mask_to_5d(head_mask, num_hidden_layers, dtype).unwrap();
+                Self::convert_head_mask_to_5d(head_mask, num_hidden_layers as i64, dtype);
 
             if is_attention_chunkced {
-                head_mask = head_mask.unsqueeze(D::Minus1).unwrap();
+                head_mask = head_mask.unsqueeze(-1);
             }
 
             Some(head_mask)
@@ -531,43 +530,36 @@ impl CoreModel {
         }
     }
 
-    fn convert_head_mask_to_5d(
-        head_mask: &Tensor,
-        num_hidden_layers: usize,
-        dtype: DType,
-    ) -> Result<Tensor> {
-        let dim = head_mask.rank();
+    fn convert_head_mask_to_5d(head_mask: &Tensor, num_hidden_layers: i64, dtype: Kind) -> Tensor {
+        let dim = head_mask.dim();
 
         let head_mask = if dim == 1 {
             head_mask
-                .unsqueeze(0)?
-                .unsqueeze(0)?
-                .unsqueeze(D::Minus1)?
-                .unsqueeze(D::Minus1)?
-                .expand((num_hidden_layers,))?
+                .unsqueeze(0)
+                .unsqueeze(0)
+                .unsqueeze(-1)
+                .unsqueeze(-1)
+                .expand([num_hidden_layers], false)
         } else if dim == 2 {
-            head_mask
-                .unsqueeze(1)?
-                .unsqueeze(D::Minus1)?
-                .unsqueeze(D::Minus1)?
+            head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
         } else {
-            head_mask.clone()
+            head_mask.shallow_clone()
         };
 
         assert_eq!(
-            head_mask.rank(),
+            head_mask.dim(),
             5,
             "Num dimension of 'head_mask' must be 5, is {}",
-            head_mask.rank()
+            head_mask.dim()
         );
 
-        head_mask.to_dtype(dtype)
+        head_mask.to_kind(dtype)
     }
 }
 
 impl HiddenLayer {
     pub fn new(
-        layer_vb: VarBuilder,
+        layer_vb: &nn::Path,
         embed_size: usize,
         inner_size: usize,
         num_heads: usize,
@@ -579,20 +571,24 @@ impl HiddenLayer {
         resid_pdrop: f32,
         device: &Device,
     ) -> HiddenLayer {
-        let layer_norm_vb = layer_vb.pp("ln_1");
-        let attn_vb = layer_vb.pp("attn");
-        let mlp_vb = layer_vb.pp("mlp");
+        let layer_norm_vb = layer_vb / "ln_1";
+        let attn_vb = layer_vb / "attn";
+        let mlp_vb = layer_vb / "mlp";
 
-        let layer_norm = LayerNorm::new(
-            layer_norm_vb.get(embed_size, "weight").unwrap(),
-            layer_norm_vb.get(embed_size, "bias").unwrap(),
-            lm_eps,
+        let layer_norm = layer_norm(
+            layer_norm_vb,
+            [embed_size as i64].to_vec(),
+            LayerNormConfig {
+                cudnn_enabled: device.is_cuda(),
+                eps: lm_eps,
+                ..Default::default()
+            },
         );
 
         let head_size = embed_size / num_heads;
 
         let attention = Attention::new(
-            attn_vb,
+            &attn_vb,
             embed_size,
             num_heads,
             head_size,
@@ -604,7 +600,7 @@ impl HiddenLayer {
             device,
         );
 
-        let mlp = MLP::new(mlp_vb, inner_size, embed_size, resid_pdrop);
+        let mlp = MLP::new(&mlp_vb, inner_size, embed_size, resid_pdrop);
 
         HiddenLayer {
             layer_norm,
@@ -624,7 +620,7 @@ impl HiddenLayer {
         output_attentions: bool,
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
         let residual = hidden_states;
-        let hidden_states = self.layer_norm.forward(&hidden_states)?;
+        let hidden_states = self.layer_norm.forward(&hidden_states);
         let (attn_output, present, attn_weights) = self.attention.forward(
             &hidden_states,
             position_ids,
@@ -636,7 +632,7 @@ impl HiddenLayer {
         )?;
 
         let feed_forward_hidden_states = self.mlp.forward(&hidden_states)?;
-        let hidden_states = (attn_output + feed_forward_hidden_states + residual)?;
+        let hidden_states = attn_output + feed_forward_hidden_states + residual;
 
         if use_cache {
             Ok((hidden_states, present, attn_weights))
@@ -648,7 +644,7 @@ impl HiddenLayer {
 
 impl Attention {
     pub fn new(
-        vb: VarBuilder,
+        vb: &nn::Path,
         embed_size: usize,
         num_heads: usize,
         head_size: usize,
@@ -659,52 +655,62 @@ impl Attention {
         resid_pdrop: f32,
         device: &Device,
     ) -> Attention {
-        let embed_shape = (embed_size, embed_size);
+        let embed_shape = [embed_size as i64, embed_size as i64];
+
+        let default_init = LinearConfig {
+            ..Default::default()
+        }
+        .ws_init;
+
         let qkv_weight = Tensor::cat(
             &[
-                vb.get(embed_shape, "q_proj.weight").unwrap(),
-                vb.get(embed_shape, "k_proj.weight").unwrap(),
-                vb.get(embed_shape, "v_proj.weight").unwrap(),
+                (vb / "q_proj").var("weight", &embed_shape, default_init),
+                (vb / "k_proj").var("weight", &embed_shape, default_init),
+                (vb / "v_proj").var("weight", &embed_shape, default_init),
             ],
             0,
-        )
-        .unwrap();
+        );
 
-        let qkv = Linear::new(qkv_weight, None);
-        let out = Linear::new(vb.get(embed_shape, "out_proj.weight").unwrap(), None);
+        let qkv = Linear {
+            ws: qkv_weight,
+            bs: None,
+        };
 
-        let mut bias_vec = vec![0u8; max_pos_embeddings * max_pos_embeddings];
+        let out = Linear {
+            ws: (vb / "out_proj").var("weight", &embed_shape, default_init),
+            bs: None,
+        };
+
+        let mut bias_vec = vec![false; max_pos_embeddings * max_pos_embeddings];
 
         for i in 0..max_pos_embeddings {
             for j in 0..max_pos_embeddings {
                 let is_tril = i <= j;
 
                 if is_tril {
-                    bias_vec[i + j * max_pos_embeddings] = 1;
+                    bias_vec[i + j * max_pos_embeddings] = true;
                 }
             }
         }
 
-        let bias = Tensor::from_vec(
-            bias_vec,
-            &[1, 1, max_pos_embeddings, max_pos_embeddings],
-            device,
-        )
-        .unwrap();
+        let bias = Tensor::from_slice(&bias_vec)
+            .reshape([
+                1i64,
+                1,
+                max_pos_embeddings as i64,
+                max_pos_embeddings as i64,
+            ])
+            .to_device(*device);
 
-        let scale_attn = Tensor::new(&[head_size as f32], device).unwrap();
-        let scale_attn = scale_attn.sqrt().unwrap();
+        let mut scale_attn = Tensor::from_slice(&[head_size as f32]).to_device(*device);
+        scale_attn.sqrt_();
 
         let embed_positions = Self::create_sinusoidal_positions(
             max_pos_embeddings,
             pos_embed_dimension,
             device,
-            qkv.weight().dtype(),
-        )
-        .unwrap();
-
-        let attn_dropout = Dropout::new(attn_pdrop);
-        let resid_dropout = Dropout::new(resid_pdrop);
+            qkv.ws.kind(),
+        );
 
         Attention {
             qkv,
@@ -716,8 +722,8 @@ impl Attention {
             bias,
             scale_attn,
             embed_positions,
-            attn_dropout,
-            resid_dropout,
+            attn_pdrop,
+            resid_pdrop,
         }
     }
 
@@ -731,79 +737,79 @@ impl Attention {
         use_cache: bool,
         output_attentions: bool,
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
-        let qkv = self.qkv.forward(&hidden_states)?;
+        let qkv = self.qkv.forward(&hidden_states);
 
-        let qk = qkv.narrow(D::Minus1, 0, self.embed_size * 2)?;
-        let v = qkv.narrow(D::Minus1, self.embed_size * 2, self.embed_size)?;
+        let qk = qkv.narrow(-1, 0, self.embed_size as i64 * 2);
+        let v = qkv.narrow(-1, self.embed_size as i64 * 2, self.embed_size as i64);
 
-        let qk = Self::split_heads(&qk, self.num_heads * 2, self.head_size, true)?;
-        let v = Self::split_heads(&v, self.num_heads, self.head_size, false)?;
+        let qk = Self::split_heads(&qk, self.num_heads * 2, self.head_size, true);
+        let v = Self::split_heads(&v, self.num_heads, self.head_size, false);
 
-        let embed_positions = self.get_embed_positions(position_ids)?;
+        let embed_positions = self.get_embed_positions(position_ids);
 
         let repeated_position_ids = position_ids
-            .unsqueeze(D::Minus1)?
-            .repeat(&[1, 1, embed_positions.dim(D::Minus1)?])?
-            .contiguous()?;
+            .unsqueeze(-1)
+            .repeat(&[1, 1, *embed_positions.size().last().unwrap()])
+            .contiguous();
 
-        let sincos = embed_positions.gather(&repeated_position_ids, 1)?;
-        let sincos_half_count = sincos.dim(D::Minus1)? / 2;
-        let sin = sincos.narrow(D::Minus1, 0, sincos_half_count)?;
-        let cos = sincos.narrow(D::Minus1, sincos_half_count, sincos_half_count)?;
+        let sincos = embed_positions.gather(1, &repeated_position_ids, false);
+        let sincos_half_count = sincos.size().last().unwrap() / 2;
+        let sin = sincos.narrow(-1, 0, sincos_half_count);
+        let cos = sincos.narrow(-1, sincos_half_count, sincos_half_count);
 
         let qk = if self.rotary_dim == 0 {
-            let qk = Self::apply_rotary_pos_emb(&qk, &sin, &cos)?;
+            let qk = Self::apply_rotary_pos_emb(&qk, &sin, &cos);
 
             qk
         } else {
             let dim_index = 3;
-            let qk_rot = qk.narrow(dim_index, 0, self.rotary_dim)?.contiguous()?;
+            let qk_rot = qk.narrow(dim_index, 0, self.rotary_dim as i64).contiguous();
             let qk_pass = qk.narrow(
                 dim_index,
-                self.rotary_dim,
-                qk.dim(dim_index)? - self.rotary_dim,
-            )?;
+                self.rotary_dim as i64,
+                qk.size()[dim_index as usize] - self.rotary_dim as i64,
+            );
 
-            let qk_rot = Self::apply_rotary_pos_emb(&qk_rot, &sin, &cos)?;
+            let qk_rot = Self::apply_rotary_pos_emb(&qk_rot, &sin, &cos);
 
-            let qk = Tensor::cat(&[qk_rot, qk_pass], D::Minus1)?;
+            let qk = Tensor::cat(&[qk_rot, qk_pass], -1);
 
             qk
         };
 
-        let qk = qk.permute((0, 2, 1, 3))?;
+        let qk = qk.permute([0, 2, 1, 3]);
 
-        let qk_dim = 1;
-        let qk_size = qk.dim(qk_dim)? / 2;
+        let qk_dim = 1i64;
+        let qk_size = qk.size()[qk_dim as usize] / 2;
 
-        let q = qk.narrow(qk_dim, 0, qk_size)?;
-        let k = qk.narrow(qk_dim, qk_size, qk_size)?;
+        let q = qk.narrow(qk_dim, 0, qk_size);
+        let k = qk.narrow(qk_dim, qk_size, qk_size);
 
         let (k, v) = if let Some(layer_past) = layer_past {
             let past_key = layer_past.0;
             let past_value = layer_past.1;
 
-            let k = Tensor::cat(&[past_key, &k], D::Minus2)?;
-            let v = Tensor::cat(&[past_value, &v], D::Minus2)?;
+            let k = Tensor::cat(&[past_key, &k], -2);
+            let v = Tensor::cat(&[past_value, &v], -2);
 
             (k, v)
         } else {
             (k, v)
         };
 
-        let k = k.contiguous()?;
-        let q = q.contiguous()?;
-        let v = v.contiguous()?;
+        let k = k.contiguous();
+        let q = q.contiguous();
+        let v = v.contiguous();
 
         let (attn_output, attn_weights) =
             self.get_attention(&q, &k, &v, attention_mask, head_mask)?;
 
-        let attn_output = Self::merge_heads(&attn_output, self.num_heads, self.head_size)?;
-        let attn_output = self.out.forward(&attn_output)?;
-        let attn_output = self.resid_dropout.forward(&attn_output, false)?;
+        let attn_output = Self::merge_heads(&attn_output, self.num_heads, self.head_size);
+        let mut attn_output = self.out.forward(&attn_output);
+        attn_output.dropout_(self.resid_pdrop as f64, false);
 
         let present = if use_cache {
-            Some((k.to_dtype(hidden_states.dtype())?, v))
+            Some((k.to_kind(hidden_states.kind()), v))
         } else {
             None
         };
@@ -815,13 +821,13 @@ impl Attention {
         }
     }
 
-    fn merge_heads(attn_output: &Tensor, num_heads: usize, head_size: usize) -> Result<Tensor> {
-        let num_dims = attn_output.dims().len();
+    fn merge_heads(attn_output: &Tensor, num_heads: usize, head_size: usize) -> Tensor {
+        let num_dims = attn_output.dim();
 
         let attn_output = if num_dims == 5 {
-            attn_output.permute((0, 1, 3, 2, 4))?
+            attn_output.permute([0, 1, 3, 2, 4])
         } else if num_dims == 4 {
-            attn_output.permute((0, 2, 1, 3))?
+            attn_output.permute([0, 2, 1, 3])
         } else {
             panic!(
                 "Input tensor rank should be one of [4, 5], but is: {}",
@@ -829,8 +835,8 @@ impl Attention {
             )
         };
 
-        let mut new_shape = attn_output.dims()[0..attn_output.dims().len() - 2].to_vec();
-        new_shape.push(num_heads * head_size);
+        let mut new_shape = attn_output.size()[0..attn_output.size().len() - 2].to_vec();
+        new_shape.push((num_heads * head_size) as i64);
 
         attn_output.reshape(new_shape)
     }
@@ -843,40 +849,37 @@ impl Attention {
         attention_mask: &Option<Tensor>,
         head_mask: &Option<Tensor>,
     ) -> Result<(Tensor, Tensor)> {
-        let query_length = query.dim(D::Minus2)?;
-        let key_length = key.dim(D::Minus2)?;
+        let query_length = query.size()[query.size().len() - 2];
+        let key_length = key.size()[key.size().len() - 2];
 
         let causal_mask = self
             .bias
-            .narrow(2, key_length - query_length, key_length)?
-            .narrow(3, 0, key_length)?;
+            .narrow(2, key_length - query_length, key_length)
+            .narrow(3, 0, key_length);
 
-        let query = query.to_dtype(candle_core::DType::F32)?;
-        let key = key.to_dtype(candle_core::DType::F32)?;
+        let query = query.to_kind(Kind::Float);
+        let key = key.to_kind(Kind::Float);
 
-        let attn_weights = query.matmul(&key.transpose(D::Minus1, D::Minus2)?)?;
+        let attn_weights = query.matmul(&key.transpose(-1, -2));
 
-        let causal_mask = causal_mask.broadcast_as(attn_weights.shape())?;
+        let mask_value = Tensor::from_slice(&[f32::MIN]).to_device(attn_weights.device());
+        //.broadcast_to(attn_weights.size());
 
-        let mask_value =
-            Tensor::new(&[f32::MIN], attn_weights.device())?.broadcast_as(attn_weights.shape())?;
-
-        let mut attn_weights = causal_mask.where_cond(&attn_weights, &mask_value)?;
-        attn_weights = attn_weights.broadcast_div(&self.scale_attn)?;
+        let mut attn_weights = attn_weights.where_self(&causal_mask, &mask_value);
+        attn_weights.divide_(&self.scale_attn);
 
         if let Some(attention_mask) = attention_mask {
-            attn_weights = (attn_weights + attention_mask)?;
+            attn_weights = (attn_weights + attention_mask);
         }
 
-        let attn_weights = softmax(&attn_weights, D::Minus1)?;
-        let attn_weights = attn_weights.to_dtype(value.dtype())?;
-        let mut attn_weights = self.attn_dropout.forward(&attn_weights, false)?;
+        let mut attn_weights = attn_weights.softmax(-1, value.kind());
+        attn_weights.dropout_(self.attn_pdrop as f64, false);
 
         if let Some(head_mask) = head_mask {
-            attn_weights = attn_weights.mul(head_mask)?
+            attn_weights = attn_weights.mul(head_mask)
         }
 
-        let attn_output = attn_weights.matmul(&value)?;
+        let attn_output = attn_weights.matmul(&value);
 
         Ok((attn_output, attn_weights))
     }
@@ -885,128 +888,140 @@ impl Attention {
         num_pos: usize,
         dimension: usize,
         device: &Device,
-        dtype: DType,
-    ) -> Result<Tensor> {
+        dtype: Kind,
+    ) -> Tensor {
         let inv_freq = (0..dimension)
             .step_by(2)
             .map(|x| 1.0 / (10000f32.powf(x as f32 / dimension as f32)))
             .collect::<Vec<_>>();
 
-        let pos_ids = Tensor::arange(0f32, num_pos as f32, device)?
-            .unsqueeze(1)?
-            .to_dtype(dtype)?;
-        let inv_freq = Tensor::new(inv_freq, device)?
-            .unsqueeze(0)?
-            .to_dtype(dtype)?;
+        let pos_ids = Tensor::arange(num_pos as i64, (dtype, *device)).unsqueeze(1);
+        let inv_freq = Tensor::from_slice(&inv_freq)
+            .unsqueeze(0)
+            .to_device(*device)
+            .to_kind(dtype);
 
-        let sinusoid_inp = pos_ids.matmul(&inv_freq)?;
+        let sinusoid_inp = pos_ids.matmul(&inv_freq);
 
-        let sin = Tensor::sin(&sinusoid_inp)?;
-        let cos = Tensor::cos(&sinusoid_inp)?;
+        let sin = Tensor::sin(&sinusoid_inp);
+        let cos = Tensor::cos(&sinusoid_inp);
 
         Tensor::cat(&[sin, cos], 1)
     }
 
-    fn split_heads(
-        input: &Tensor,
-        num_heads: usize,
-        head_size: usize,
-        do_rotary: bool,
-    ) -> Result<Tensor> {
-        let new_shape = &input.dims()[0..input.dims().len() - 1];
+    fn split_heads(input: &Tensor, num_heads: usize, head_size: usize, do_rotary: bool) -> Tensor {
+        let new_shape = &input.size()[0..input.size().len() - 1];
 
         let new_shape = new_shape
             .iter()
-            .chain(&[num_heads, head_size])
+            .chain(&[num_heads as i64, head_size as i64])
             .map(|x| *x)
             .collect::<Vec<_>>();
 
         let new_shape_dim = new_shape.len();
 
-        let ret = input.reshape(new_shape)?;
+        let ret = input.reshape(new_shape);
 
         if do_rotary {
-            Ok(ret)
+            ret
         } else if new_shape_dim == 5 {
-            ret.permute((0, 1, 3, 2, 4))
+            ret.permute([0, 1, 3, 2, 4])
         } else if new_shape_dim == 4 {
-            ret.permute((0, 2, 1, 3))
+            ret.permute([0, 2, 1, 3])
         } else {
             panic!("Invalid shape")
         }
     }
 
-    fn get_embed_positions(&mut self, input: &Tensor) -> Result<Tensor> {
-        if !self.embed_positions.device().same_device(input.device()) {
-            self.embed_positions = self.embed_positions.to_device(input.device())?;
+    fn get_embed_positions(&mut self, input: &Tensor) -> Tensor {
+        if self.embed_positions.device().ne(&input.device()) {
+            self.embed_positions = self.embed_positions.to_device(input.device());
         }
 
-        self.embed_positions.repeat((input.dim(0)?, 1, 1))
+        self.embed_positions.repeat([input.size()[0], 1, 1])
     }
 
-    fn apply_rotary_pos_emb(tensor: &Tensor, sin: &Tensor, cos: &Tensor) -> Result<Tensor> {
+    fn apply_rotary_pos_emb(tensor: &Tensor, sin: &Tensor, cos: &Tensor) -> Tensor {
         let repeats = 2;
-        let dim = 2;
+        let dim = 3;
 
-        let sin = repeat_interleave(&sin, repeats, dim)?;
-        let cos = repeat_interleave(&cos, repeats, dim)?;
+        let sin = sin
+            .unsqueeze(dim - 1)
+            .repeat_interleave_self_int(repeats, dim, None);
+        let cos = cos
+            .unsqueeze(dim - 1)
+            .repeat_interleave_self_int(repeats, dim, None);
 
-        let rotated = Self::rotate_every_two(tensor)?;
+        let rotated = Self::rotate_every_two(tensor);
 
-        tensor.broadcast_mul(&cos)? + rotated.broadcast_mul(&sin)
+        tensor.multiply(&cos) + rotated.multiply(&sin)
     }
 
-    fn rotate_every_two(tensor: &Tensor) -> Result<Tensor> {
-        let rotate_dim = 3;
-        let dim_count = tensor.dim(rotate_dim)? as u32;
+    fn rotate_every_two(tensor: &Tensor) -> Tensor {
+        let rotate_dim = 3i64;
+        let dim_count = tensor.size()[rotate_dim as usize];
 
-        let zero_start_indices = Tensor::arange_step(0, dim_count, 2, tensor.device())?;
-        let one_start_indices = Tensor::arange_step(1, dim_count, 2, tensor.device())?;
+        let zero_start_indices =
+            Tensor::arange_start_step(0, dim_count, 2, (Kind::Int64, tensor.device()));
+        let one_start_indices =
+            Tensor::arange_start_step(1, dim_count, 2, (Kind::Int64, tensor.device()));
 
-        let x_zero = tensor.index_select(&zero_start_indices, rotate_dim)?;
-        let x_one = tensor.index_select(&one_start_indices, rotate_dim)?;
+        let x_zero = tensor.index_select(rotate_dim, &zero_start_indices);
+        let x_one = tensor.index_select(rotate_dim, &one_start_indices);
 
-        let x = Tensor::stack(&[x_one.neg()?, x_zero], D::Minus1)?;
+        let x = Tensor::stack(&[x_one.neg(), x_zero], -1);
 
-        x.flatten(D::Minus2, D::Minus1)
+        x.flatten(-2, -1)
     }
 }
 
 impl MLP {
-    pub fn new(vb: VarBuilder, inter_size: usize, embed_size: usize, resid_pdrop: f32) -> MLP {
-        let fc_in = linear(embed_size, inter_size, vb.pp("fc_in")).unwrap();
-        let fc_out = linear(inter_size, embed_size, vb.pp("fc_out")).unwrap();
+    pub fn new(vb: &nn::Path, inter_size: usize, embed_size: usize, resid_pdrop: f32) -> MLP {
+        let fc_in = linear(
+            vb / "fc_in",
+            embed_size as i64,
+            inter_size as i64,
+            LinearConfig {
+                ..Default::default()
+            },
+        );
 
-        let activation = candle_nn::activation::Activation::NewGelu;
-        let dropout = Dropout::new(resid_pdrop);
+        let fc_out = linear(
+            vb / "fc_out",
+            inter_size as i64,
+            embed_size as i64,
+            LinearConfig {
+                ..Default::default()
+            },
+        );
 
         MLP {
             fc_in,
             fc_out,
-            activation,
-            dropout,
+            resid_pdrop,
         }
     }
 
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        let input = self.fc_in.forward(&input)?;
-        let input = self.activation.forward(&input)?;
-        let input = self.fc_out.forward(&input)?;
-        let input = self.dropout.forward(&input, false)?;
+        let mut input = self.fc_in.forward(&input);
+        input.gelu_("none");
+        let mut input = self.fc_out.forward(&input);
+        input.dropout_(self.resid_pdrop as f64, false);
 
         Ok(input)
     }
 }
 
-fn repeat_interleave(tensor: &Tensor, repeats: usize, dim: usize) -> Result<Tensor> {
-    let tensor = tensor.unsqueeze(dim)?;
+fn repeat_interleave(tensor: &Tensor, repeats: usize, dim: usize) -> Tensor {
+    let dim = dim as i64;
+    let tensor = tensor.unsqueeze(dim);
 
-    let mut shape = tensor.dims().to_vec();
-    shape[dim] = repeats;
+    let mut shape = tensor.size();
+    shape[dim as usize] = repeats as i64;
 
-    let tensor = tensor.broadcast_as(shape)?;
-    let tensor = tensor.transpose(dim, dim + 1)?;
-    let tensor = tensor.flatten(dim, dim + 1)?;
+    let mut tensor = tensor.broadcast_to(shape);
+    tensor.transpose_(dim, dim + 1);
+    let tensor = tensor.flatten(dim, dim + 1);
     let tensor = tensor.unsqueeze(dim);
 
     tensor

@@ -7,6 +7,7 @@ use clap::Parser;
 use candle_core::{backend::BackendDevice, CudaDevice, Device};
 
 use component::model_candle::ModelLoader;
+use component::model_tch::ModelLoader as ModelLoader2;
 use tokio::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -55,11 +56,13 @@ async fn main() -> anyhow::Result<()> {
     }
     println!("");
 
-    let mut loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
+    // let mut loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
+    let mut loader2 = ModelLoader2::new(&model_dir, &tokenizer_dir, &tch::Device::Cpu);
     let inputs = ["Hello who are you?", "What is your name?"];
 
     let start_time = Instant::now();
-    let outputs = loader.inference(&inputs)?;
+    // let outputs = loader.inference(&inputs)?;
+    let outputs = loader2.inference(&inputs)?;
     let end_time = Instant::now();
 
     println!("Inputs: {:?}", inputs);
