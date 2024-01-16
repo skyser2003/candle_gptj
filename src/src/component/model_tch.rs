@@ -1020,7 +1020,7 @@ fn repeat_interleave(tensor: &Tensor, repeats: usize, dim: usize) -> Tensor {
     shape[dim as usize] = repeats as i64;
 
     let mut tensor = tensor.broadcast_to(shape);
-    tensor.transpose_(dim, dim + 1);
+    let _ = tensor.transpose_(dim, dim + 1);
     let tensor = tensor.flatten(dim, dim + 1);
     let tensor = tensor.unsqueeze(dim);
 
