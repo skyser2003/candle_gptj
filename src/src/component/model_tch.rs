@@ -44,7 +44,7 @@ pub struct HiddenLayer {
 }
 
 pub struct Attention {
-    pub qkv: Linear,
+    pub qkv: Option<Linear>,
     pub out: Linear,
     pub num_heads: usize,
     pub head_size: usize,
@@ -102,10 +102,10 @@ impl ModelLoader {
 
         let (dtype, dtype_min) = *dtype_map.get(torch_dtype.as_str()).unwrap();
 
-        let vs = VarStore::new(Device::Cpu);
+        let mut vs = VarStore::new(Device::Cpu);
         let vr = &vs.root();
 
-        let core_model = CoreModel::new(vr, &dtype, dtype_min, &device, &config);
+        let mut core_model = CoreModel::new(vr, &dtype, dtype_min, &device, &config);
         let lm_head = linear(
             vr / "lm_head",
             config.n_embd as i64,
@@ -115,23 +115,10 @@ impl ModelLoader {
             },
         );
 
-        let vb = safetensors::SafeTensors::deserialize(&buffer).unwrap();
+        vs.load(model_filename.clone()).unwrap();
 
-        for (name, var) in vs.variables().iter_mut() {
-            let view = vb.tensor(&name).unwrap();
-            let size = view.shape().iter().map(|&x| x as i64).collect::<Vec<_>>();
-
-            let kind: Kind = match view.dtype() {
-                safetensors::Dtype::F32 => Kind::Float,
-                safetensors::Dtype::F16 => Kind::Half,
-                safetensors::Dtype::BF16 => Kind::BFloat16,
-                all => panic!("Unsupported type {:?}", all),
-            };
-            let tensor =
-                unsafe { Tensor::from_blob(view.data().as_ptr(), &size, &[], kind, *device) };
-            let _ = var.requires_grad_(false);
-            var.copy_(&tensor);
-        }
+        let vr = &(vs.root() / "transformer");
+        core_model.post_load(vr);
 
         let model = CausalModel {
             model_filename,
@@ -325,6 +312,13 @@ impl CoreModel {
             hidden_layers: layers,
             layernorm_final,
             is_parallel: false,
+        }
+    }
+
+    fn post_load(&mut self, vs: &nn::Path) {
+        for (i, ele) in self.hidden_layers.iter_mut().enumerate() {
+            let vs = vs / "h" / i;
+            ele.post_load(&vs);
         }
     }
 
@@ -609,6 +603,11 @@ impl HiddenLayer {
         }
     }
 
+    fn post_load(&mut self, vs: &nn::Path) {
+        let vs = vs / "attn";
+        self.attention.post_load(&vs)
+    }
+
     fn forward(
         &mut self,
         hidden_states: &Tensor,
@@ -657,27 +656,13 @@ impl Attention {
     ) -> Attention {
         let embed_shape = [embed_size as i64, embed_size as i64];
 
-        let default_init = LinearConfig {
-            ..Default::default()
-        }
-        .ws_init;
-
-        let qkv_weight = Tensor::cat(
-            &[
-                (vb / "q_proj").var("weight", &embed_shape, default_init),
-                (vb / "k_proj").var("weight", &embed_shape, default_init),
-                (vb / "v_proj").var("weight", &embed_shape, default_init),
-            ],
-            0,
-        );
-
-        let qkv = Linear {
-            ws: qkv_weight,
-            bs: None,
-        };
+        // Will be loaded later, because Tensor::cat operation on real weights is required
+        let _ = (vb / "q_proj").var("weight", &embed_shape, nn::Init::Const(0.0));
+        let _ = (vb / "k_proj").var("weight", &embed_shape, nn::Init::Const(0.0));
+        let _ = (vb / "v_proj").var("weight", &embed_shape, nn::Init::Const(0.0));
 
         let out = Linear {
-            ws: (vb / "out_proj").var("weight", &embed_shape, default_init),
+            ws: (vb / "out_proj").var("weight", &embed_shape, nn::Init::Const(0.0)),
             bs: None,
         };
 
@@ -709,11 +694,11 @@ impl Attention {
             max_pos_embeddings,
             pos_embed_dimension,
             device,
-            qkv.ws.kind(),
+            out.ws.kind(),
         );
 
         Attention {
-            qkv,
+            qkv: None,
             out,
             num_heads,
             head_size,
@@ -727,6 +712,24 @@ impl Attention {
         }
     }
 
+    fn post_load(&mut self, vs: &nn::Path) {
+        let qkv_weight = Tensor::cat(
+            &[
+                (vs / "q_proj").get("weight").unwrap(),
+                (vs / "k_proj").get("weight").unwrap(),
+                (vs / "v_proj").get("weight").unwrap(),
+            ],
+            0,
+        );
+
+        let qkv = Linear {
+            ws: qkv_weight,
+            bs: None,
+        };
+
+        self.qkv = Some(qkv);
+    }
+
     fn forward(
         &mut self,
         hidden_states: &Tensor,
@@ -737,7 +740,7 @@ impl Attention {
         use_cache: bool,
         output_attentions: bool,
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
-        let qkv = self.qkv.forward(&hidden_states);
+        let qkv = self.qkv.as_ref().unwrap().forward(&hidden_states);
 
         let qk = qkv.narrow(-1, 0, self.embed_size as i64 * 2);
         let v = qkv.narrow(-1, self.embed_size as i64 * 2, self.embed_size as i64);
