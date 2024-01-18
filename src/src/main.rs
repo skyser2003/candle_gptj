@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
 
     let model_dir = args.model_dir;
     let tokenizer_dir = args.tokenizer_dir;
-    let dtype_str = args.device.clone();
+    let dtype_str = args.dtype.clone();
     let device_str = args.device.clone();
     let framework = args.framework.clone();
 
