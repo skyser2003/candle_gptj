@@ -13,12 +13,26 @@ import torch
 import tqdm
 
 
-def get_model(model_dir: str, device: str):
+dtype_map = {
+    "float32": torch.float32,
+    "float16": torch.float16,
+    "bfloat": torch.bfloat16,
+}
+
+
+def get_model(model_dir: str, dtype: str, device: str):
     print("Begin loading model...")
     start_time = time.time()
 
-    config = AutoConfig.from_pretrained(model_dir)
-    model = GPTJForCausalLM.from_pretrained(model_dir, use_safetensors=False, torch_dtype=config.torch_dtype)
+    if dtype == "":
+        config = AutoConfig.from_pretrained(model_dir)
+
+        if config.torch_dtype is not None:
+            torch_dtype = config.torch_dtype
+    else:
+        torch_dtype = dtype_map[dtype]
+
+    model = GPTJForCausalLM.from_pretrained(model_dir, use_safetensors=False, torch_dtype=torch_dtype)
     model = model.to(device)
     model.eval()
 
@@ -33,7 +47,7 @@ def get_model(model_dir: str, device: str):
 
     end_time = time.time()
 
-    print(f"Loading model done, {end_time - start_time}s")
+    print(f"Loading model done, dtype={model.dtype}, {end_time - start_time}s")
     print()
 
     return model, tokenizer
@@ -85,17 +99,19 @@ def main():
     parser.add_argument(
         "--model_dir", required=True, help="Directory containing the model to test"
     )
+    parser.add_argument("--dtype", required=False, default="", help="Dtype")
     parser.add_argument("--device", required=False, default="cpu", help="Device")
 
     args = parser.parse_args()
 
     model_dir: str = args.model_dir
+    dtype: str = args.dtype
     device: str = args.device
 
     print(f"Using device '{device}'")
     print()
 
-    model, tokenizer = get_model(model_dir, device)
+    model, tokenizer = get_model(model_dir, dtype, device)
 
     inputs: list[str] = ["Hello who are you?", "What is your name?"]
     test_single(model, tokenizer, inputs)

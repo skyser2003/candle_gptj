@@ -72,7 +72,12 @@ pub struct CausalOutput {
 }
 
 impl ModelLoader {
-    pub fn new(model_dir: &str, tokenizer_dir: &str, device: &Device) -> ModelLoader {
+    pub fn new(
+        model_dir: &str,
+        tokenizer_dir: &str,
+        dtype: Option<String>,
+        device: &Device,
+    ) -> ModelLoader {
         println!("Begin loading model...");
         let start_time = Instant::now();
 
@@ -93,7 +98,7 @@ impl ModelLoader {
         .into_iter()
         .collect::<HashMap<_, _>>();
 
-        let torch_dtype = config.torch_dtype.clone().unwrap_or("".to_string());
+        let torch_dtype = dtype.unwrap_or(config.torch_dtype.clone().unwrap_or("".to_string()));
 
         let torch_dtype = if dtype_map.contains_key(torch_dtype.as_str()) {
             torch_dtype
@@ -130,7 +135,8 @@ impl ModelLoader {
         let end_time = Instant::now();
 
         println!(
-            "Loading model done, {}s",
+            "Loading model done, dtype={:?}, {}s",
+            dtype,
             (end_time - start_time).as_secs_f32()
         );
         println!("");

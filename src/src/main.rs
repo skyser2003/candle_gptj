@@ -19,6 +19,9 @@ struct Arguments {
     tokenizer_dir: String,
 
     #[arg(short, long)]
+    dtype: Option<String>,
+
+    #[arg(short, long)]
     device: Option<String>,
 
     #[arg(short, long)]
@@ -60,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
 
     let model_dir = args.model_dir;
     let tokenizer_dir = args.tokenizer_dir;
+    let dtype_str = args.device.clone();
     let device_str = args.device.clone();
     let framework = args.framework.clone();
 
@@ -98,7 +102,8 @@ async fn main() -> anyhow::Result<()> {
     let (outputs, elapsed) = match framework {
         FrameWorkType::Candle => {
             let device = get_candle_device(device_type);
-            let mut loader = model_candle::ModelLoader::new(&model_dir, &tokenizer_dir, &device);
+            let mut loader =
+                model_candle::ModelLoader::new(&model_dir, &tokenizer_dir, dtype_str, &device);
 
             let start_time = Instant::now();
             let outputs = loader.inference(&inputs)?;
@@ -108,7 +113,8 @@ async fn main() -> anyhow::Result<()> {
         }
         FrameWorkType::Torch => {
             let device = get_tch_device(device_type);
-            let mut loader = model_tch::ModelLoader::new(&model_dir, &tokenizer_dir, &device);
+            let mut loader =
+                model_tch::ModelLoader::new(&model_dir, &tokenizer_dir, dtype_str, &device);
 
             let start_time = Instant::now();
             let outputs = loader.inference(&inputs)?;
