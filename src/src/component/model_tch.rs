@@ -3,12 +3,13 @@ use std::time::Instant;
 use std::{collections::HashMap, fs::File, path::PathBuf};
 
 use memmap2::{Mmap, MmapOptions};
+use safetensors::tensor::TensorView;
 use safetensors::SafeTensors;
 use tch::nn::{
     self, embedding, layer_norm, linear, Embedding, EmbeddingConfig, LayerNorm, LayerNormConfig,
     Linear, LinearConfig, Module, VarStore,
 };
-use tch::{Device, Kind, Result, Tensor};
+use tch::{Device, Kind, Result, TchError, Tensor};
 use tokenizers::Tokenizer;
 
 use super::model_base::GPTJConfig;
@@ -118,8 +119,8 @@ impl ModelLoader {
         vs.load(model_filename.clone()).unwrap();
         vs.set_kind(dtype);
 
-        let vr = &(vs.root() / "transformer");
-        core_model.post_load(vr);
+        let vb = SafeTensors::deserialize(&buffer);
+        core_model.post_load(&vb.unwrap(), *device);
 
         let model = CausalModel {
             model_filename,
@@ -318,10 +319,9 @@ impl CoreModel {
         }
     }
 
-    fn post_load(&mut self, vs: &nn::Path) {
+    fn post_load(&mut self, buffer: &SafeTensors, device: Device) {
         for (i, ele) in self.hidden_layers.iter_mut().enumerate() {
-            let vs = vs / "h" / i;
-            ele.post_load(&vs);
+            ele.post_load(i, buffer, device);
         }
     }
 
@@ -606,9 +606,8 @@ impl HiddenLayer {
         }
     }
 
-    fn post_load(&mut self, vs: &nn::Path) {
-        let vs = vs / "attn";
-        self.attention.post_load(&vs)
+    fn post_load(&mut self, layer_number: usize, buffer: &SafeTensors, device: Device) {
+        self.attention.post_load(layer_number, buffer, device);
     }
 
     fn forward(
@@ -658,11 +657,6 @@ impl Attention {
         device: &Device,
     ) -> Attention {
         let embed_shape = [embed_size as i64, embed_size as i64];
-
-        // Will be loaded later, because Tensor::cat operation on real weights is required
-        let _ = (vb / "q_proj").var("weight", &embed_shape, nn::Init::Const(0.0));
-        let _ = (vb / "k_proj").var("weight", &embed_shape, nn::Init::Const(0.0));
-        let _ = (vb / "v_proj").var("weight", &embed_shape, nn::Init::Const(0.0));
 
         let out = Linear {
             ws: (vb / "out_proj").var("weight", &embed_shape, nn::Init::Const(0.0)),
@@ -715,15 +709,44 @@ impl Attention {
         }
     }
 
-    fn post_load(&mut self, vs: &nn::Path) {
-        let qkv_weight = Tensor::cat(
-            &[
-                (vs / "q_proj").get("weight").unwrap(),
-                (vs / "k_proj").get("weight").unwrap(),
-                (vs / "v_proj").get("weight").unwrap(),
-            ],
-            0,
-        );
+    fn tensor_from_buffer(view: TensorView<'_>) -> core::result::Result<Tensor, TchError> {
+        let size: Vec<i64> = view.shape().iter().map(|&x| x as i64).collect();
+        let dtype = view.dtype();
+        let kind: Kind = match dtype {
+            safetensors::Dtype::F32 => Kind::Float,
+            safetensors::Dtype::F16 => Kind::Half,
+            safetensors::Dtype::BF16 => Kind::BFloat16,
+            _ => unreachable!(),
+        };
+        Tensor::f_from_data_size(view.data(), &size, kind)
+    }
+
+    fn post_load(&mut self, layer_number: usize, buffer: &SafeTensors, device: Device) {
+        let prefix = format!("transformer.h.{}.attn", layer_number);
+
+        let q_proj_weight = Self::tensor_from_buffer(
+            buffer
+                .tensor(format!("{}.q_proj.weight", prefix).as_str())
+                .unwrap(),
+        )
+        .unwrap();
+
+        let k_proj_weight = Self::tensor_from_buffer(
+            buffer
+                .tensor(format!("{}.k_proj.weight", prefix).as_str())
+                .unwrap(),
+        )
+        .unwrap();
+
+        let v_proj_weight = Self::tensor_from_buffer(
+            buffer
+                .tensor(format!("{}.v_proj.weight", prefix).as_str())
+                .unwrap(),
+        )
+        .unwrap();
+
+        let qkv_weight =
+            Tensor::cat(&[q_proj_weight, k_proj_weight, v_proj_weight], 0).to_device(device);
 
         let qkv = Linear {
             ws: qkv_weight,
