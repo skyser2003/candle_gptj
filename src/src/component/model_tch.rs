@@ -120,7 +120,7 @@ impl ModelLoader {
         vs.set_kind(dtype);
 
         let vb = SafeTensors::deserialize(&buffer);
-        core_model.post_load(&vb.unwrap(), *device);
+        core_model.post_load(&vb.unwrap(), dtype, *device);
 
         let model = CausalModel {
             model_filename,
@@ -319,9 +319,9 @@ impl CoreModel {
         }
     }
 
-    fn post_load(&mut self, buffer: &SafeTensors, device: Device) {
+    fn post_load(&mut self, buffer: &SafeTensors, kind: Kind, device: Device) {
         for (i, ele) in self.hidden_layers.iter_mut().enumerate() {
-            ele.post_load(i, buffer, device);
+            ele.post_load(i, buffer, kind, device);
         }
     }
 
@@ -606,8 +606,8 @@ impl HiddenLayer {
         }
     }
 
-    fn post_load(&mut self, layer_number: usize, buffer: &SafeTensors, device: Device) {
-        self.attention.post_load(layer_number, buffer, device);
+    fn post_load(&mut self, layer_number: usize, buffer: &SafeTensors, kind: Kind, device: Device) {
+        self.attention.post_load(layer_number, buffer, kind, device);
     }
 
     fn forward(
@@ -721,7 +721,7 @@ impl Attention {
         Tensor::f_from_data_size(view.data(), &size, kind)
     }
 
-    fn post_load(&mut self, layer_number: usize, buffer: &SafeTensors, device: Device) {
+    fn post_load(&mut self, layer_number: usize, buffer: &SafeTensors, kind: Kind, device: Device) {
         let prefix = format!("transformer.h.{}.attn", layer_number);
 
         let q_proj_weight = Self::tensor_from_buffer(
@@ -745,8 +745,9 @@ impl Attention {
         )
         .unwrap();
 
-        let qkv_weight =
-            Tensor::cat(&[q_proj_weight, k_proj_weight, v_proj_weight], 0).to_device(device);
+        let qkv_weight = Tensor::cat(&[q_proj_weight, k_proj_weight, v_proj_weight], 0)
+            .to_kind(kind)
+            .to_device(device);
 
         let qkv = Linear {
             ws: qkv_weight,
