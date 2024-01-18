@@ -102,7 +102,7 @@ impl ModelLoader {
 
         let (dtype, dtype_min) = *dtype_map.get(torch_dtype.as_str()).unwrap();
 
-        let mut vs = VarStore::new(Device::Cpu);
+        let mut vs = VarStore::new(*device);
         let vr = &vs.root();
 
         let mut core_model = CoreModel::new(vr, &dtype, dtype_min, &device, &config);
@@ -116,6 +116,7 @@ impl ModelLoader {
         );
 
         vs.load(model_filename.clone()).unwrap();
+        vs.set_kind(dtype);
 
         let vr = &(vs.root() / "transformer");
         core_model.post_load(vr);
@@ -195,7 +196,9 @@ impl ModelLoader {
             .flatten()
             .collect::<Vec<_>>();
 
-        let input_ids = Tensor::from_slice(&tokens).reshape([encodings.len() as i64, -1]);
+        let input_ids = Tensor::from_slice(&tokens)
+            .reshape([encodings.len() as i64, -1])
+            .to_device(self.model.device);
 
         let lm_logits = self.forward(Some(&input_ids), None)?;
 
