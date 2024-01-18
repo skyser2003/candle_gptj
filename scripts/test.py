@@ -7,6 +7,7 @@ from transformers import (
     AutoTokenizer,
     GenerationConfig,
     PreTrainedTokenizer,
+    AutoConfig
 )
 import torch
 import tqdm
@@ -16,7 +17,8 @@ def get_model(model_dir: str, device: str):
     print("Begin loading model...")
     start_time = time.time()
 
-    model = GPTJForCausalLM.from_pretrained(model_dir, use_safetensors=False)
+    config = AutoConfig.from_pretrained(model_dir)
+    model = GPTJForCausalLM.from_pretrained(model_dir, use_safetensors=False, torch_dtype=config.torch_dtype)
     model = model.to(device)
     model.eval()
 
