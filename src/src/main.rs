@@ -18,10 +18,10 @@ struct Arguments {
     #[arg(short, long)]
     tokenizer_dir: String,
 
-    #[arg(short, long)]
+    #[arg(long)]
     dtype: Option<String>,
 
-    #[arg(short, long)]
+    #[arg(long)]
     device: Option<String>,
 
     #[arg(short, long)]
