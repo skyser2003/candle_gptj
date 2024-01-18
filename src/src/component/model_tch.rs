@@ -207,9 +207,21 @@ impl ModelLoader {
             .reshape([encodings.len() as i64, -1])
             .to_device(self.model.device);
 
-        let lm_logits = self.forward(Some(&input_ids), None)?;
+        let logits = self.forward(Some(&input_ids), None)?;
 
-        let logits = lm_logits.argmax(-1, false);
+        // TODO: post processing (top_k, top_p, etc)
+        let top_k = 10;
+        let top_p = 1.3;
+        let is_greedy = true;
+
+        let (_, logits) = logits.topk(top_k, -1, true, true);
+
+        let logits = if is_greedy {
+            logits.narrow(-1, 0, 1).squeeze_dim(-1)
+        } else {
+            // TODO: Fix multi dimension
+            logits.multinomial(1, false)
+        };
 
         let logits = Vec::<Vec<i64>>::try_from(logits).unwrap();
         let logits = logits
@@ -226,8 +238,6 @@ impl ModelLoader {
             .iter()
             .map(|nested_vec| nested_vec.as_slice())
             .collect::<Vec<_>>();
-
-        // TODO: post processing (top_k, top_p, etc)
 
         let outputs = self.tokenizer.decode_batch(&logits, true).unwrap();
 
