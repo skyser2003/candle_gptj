@@ -220,32 +220,31 @@ impl ModelLoader {
             let mut logits_shape = logits.size();
             logits_shape.pop();
 
-            let logits = logits.reshape([-1, *logits.size().last().unwrap() as i64]);
+            let base_logits = logits.reshape([-1, *logits.size().last().unwrap() as i64]);
 
             // Top p
-            let (logits, _) = logits.sort(-1, true);
-            let mut logits = logits.softmax(-1, Kind::Float);
+            let (logits, sorted_indices) = base_logits.sort(-1, true);
+            let logits = logits.softmax(-1, Kind::Float);
             let cumsum_logits = logits.cumsum(-1, Kind::Float);
             let top_p_below = cumsum_logits.ge(top_p);
+            let remove_indices = top_p_below.scatter(1, &sorted_indices, &top_p_below);
 
-            let logits = logits.masked_fill_(&top_p_below, 0);
-
-            println!("{}", top_p_below);
-            println!("{}", cumsum_logits);
-            println!("{}", logits);
+            let base_logits = base_logits.masked_fill(&remove_indices, 0);
 
             // Top k
-            let (logits, indices) = logits.topk(top_k, -1, true, false);
+            let (top_k_logits, _) = base_logits.topk(top_k, -1, true, false);
+            let top_k_below = &top_k_logits.narrow(-1, top_k_logits.size()[1] - 1, 1);
+            let remove_indices = base_logits.less_tensor(&top_k_below);
+
+            let base_logits = base_logits.masked_fill(&remove_indices, 0);
 
             // TODO: Fix multi dimension
-            logits
+            base_logits
                 .softmax(-1, Kind::Float)
                 .multinomial(1, false)
                 .narrow(-1, 0, 1)
                 .reshape(logits_shape)
         };
-
-        println!("{:?}", indices.size());
 
         let indices = Vec::<Vec<i64>>::try_from(indices).unwrap();
         let indices = indices
