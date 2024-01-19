@@ -210,21 +210,45 @@ impl ModelLoader {
         let logits = self.forward(Some(&input_ids), None)?;
 
         // TODO: post processing (top_k, top_p, etc)
-        let top_k = 10;
-        let top_p = 1.3;
-        let is_greedy = true;
+        let top_k = 1;
+        let top_p = 1.0;
+        let is_greedy = false;
 
-        let (_, logits) = logits.topk(top_k, -1, true, true);
-
-        let logits = if is_greedy {
-            logits.narrow(-1, 0, 1).squeeze_dim(-1)
+        let indices = if is_greedy {
+            logits.argmax(-1, false)
         } else {
+            let mut logits_shape = logits.size();
+            logits_shape.pop();
+
+            let logits = logits.reshape([-1, *logits.size().last().unwrap() as i64]);
+
+            // Top p
+            let (logits, _) = logits.sort(-1, true);
+            let mut logits = logits.softmax(-1, Kind::Float);
+            let cumsum_logits = logits.cumsum(-1, Kind::Float);
+            let top_p_below = cumsum_logits.ge(top_p);
+
+            let logits = logits.masked_fill_(&top_p_below, 0);
+
+            println!("{}", top_p_below);
+            println!("{}", cumsum_logits);
+            println!("{}", logits);
+
+            // Top k
+            let (logits, indices) = logits.topk(top_k, -1, true, false);
+
             // TODO: Fix multi dimension
-            logits.multinomial(1, false)
+            logits
+                .softmax(-1, Kind::Float)
+                .multinomial(1, false)
+                .narrow(-1, 0, 1)
+                .reshape(logits_shape)
         };
 
-        let logits = Vec::<Vec<i64>>::try_from(logits).unwrap();
-        let logits = logits
+        println!("{:?}", indices.size());
+
+        let indices = Vec::<Vec<i64>>::try_from(indices).unwrap();
+        let indices = indices
             .iter()
             .map(|nested_vec| {
                 nested_vec
@@ -234,12 +258,12 @@ impl ModelLoader {
             })
             .collect::<Vec<_>>();
 
-        let logits = logits
+        let indices = indices
             .iter()
             .map(|nested_vec| nested_vec.as_slice())
             .collect::<Vec<_>>();
 
-        let outputs = self.tokenizer.decode_batch(&logits, true).unwrap();
+        let outputs = self.tokenizer.decode_batch(&indices, true).unwrap();
 
         return Ok(outputs);
     }
