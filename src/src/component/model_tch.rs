@@ -238,7 +238,6 @@ impl ModelLoader {
 
             let base_logits = base_logits.masked_fill(&remove_indices, 0);
 
-            // TODO: Fix multi dimension
             base_logits
                 .softmax(-1, Kind::Float)
                 .multinomial(1, false)
