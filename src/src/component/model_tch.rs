@@ -241,8 +241,14 @@ impl ModelLoader {
         inputs: &[&str],
         config: Option<GenerationConfig>,
     ) -> Result<Vec<String>> {
+        let config = config.unwrap_or(GenerationConfig {
+            max_tokens: Some(50),
+            top_k: Some(1),
+            top_p: Some(0.0),
+        });
+
         let encodings = self.tokenizer.encode_batch(inputs.to_vec(), true).unwrap();
-        let tokens = encodings
+        let input_tokens = encodings
             .iter()
             .map(|enc| {
                 enc.get_ids()
@@ -253,45 +259,57 @@ impl ModelLoader {
             .flatten()
             .collect::<Vec<_>>();
 
-        let input_ids = Tensor::from_slice(&tokens)
+        let input_ids = Tensor::from_slice(&input_tokens)
             .reshape([encodings.len() as i64, -1])
             .to_device(self.model.device);
 
-        let logits = self.forward(Some(&input_ids), None)?;
+        let mut embeds = self.model.transformer.create_embed(&input_ids);
 
-        // Post processing
-        let config = config.unwrap_or(GenerationConfig {
-            max_tokens: Some(50),
-            top_k: Some(1),
-            top_p: Some(0.0),
-        });
+        let mut gen_tokens = vec![vec![]; inputs.len()];
 
-        let is_greedy = false;
+        for _ in 0..config.max_tokens.unwrap() {
+            let all_logits = self.forward(None, Some(embeds.copy()))?;
+            let logits = all_logits.narrow(1, -1, 1);
 
-        let top_p_warper = TopPLogitsWarper {
-            p: config.top_p.unwrap(),
-            min_tokens: 1,
-        };
+            // Post processing
+            let is_greedy = false;
 
-        let top_k_warper = TopKLogitsWarper {
-            k: config.top_k.unwrap(),
-        };
+            let top_p_warper = TopPLogitsWarper {
+                p: config.top_p.unwrap(),
+                min_tokens: 1,
+            };
 
-        let indices = if is_greedy {
-            logits.argmax(-1, false)
-        } else {
-            let mut logits_shape = logits.size();
-            logits_shape.pop();
+            let top_k_warper = TopKLogitsWarper {
+                k: config.top_k.unwrap(),
+            };
 
-            let base_logits = logits.reshape([-1, *logits.size().last().unwrap() as i64]);
+            let indices = if is_greedy {
+                logits.argmax(-1, false)
+            } else {
+                let mut logits_shape = logits.size();
+                logits_shape.pop();
 
-            let base_logits = top_p_warper.process(&input_ids, &base_logits);
-            let base_logits = top_k_warper.process(&input_ids, &base_logits);
+                let base_logits = logits.reshape([-1, *logits.size().last().unwrap() as i64]);
 
-            base_logits.narrow(-1, 0, 1).reshape(logits_shape)
-        };
+                let base_logits = top_p_warper.process(&input_ids, &base_logits);
+                let base_logits = top_k_warper.process(&input_ids, &base_logits);
 
-        let indices = Vec::<Vec<i64>>::try_from(indices).unwrap();
+                base_logits.narrow(-1, 0, 1).reshape(logits_shape)
+            };
+
+            let gen_embeds = self.model.transformer.create_embed(&indices);
+
+            embeds = Tensor::cat(&[embeds, gen_embeds], 1);
+
+            for (tokens, index) in gen_tokens
+                .iter_mut()
+                .zip(&Vec::<Vec<i64>>::try_from(indices).unwrap())
+            {
+                tokens.push(index[0]);
+            }
+        }
+
+        let indices = gen_tokens;
         let indices = indices
             .iter()
             .map(|nested_vec| {

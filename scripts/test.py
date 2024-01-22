@@ -56,8 +56,6 @@ def get_model(model_dir: str, dtype: str, device: str):
 def test_single(
     model: GPTJForCausalLM, tokenizer: PreTrainedTokenizer, inputs: list[str]
 ):
-    start_time = time.time()
-
     input_ids = tokenizer.batch_encode_plus(inputs, return_tensors="pt")["input_ids"]
     input_ids = input_ids.to(model.device)
 
@@ -67,31 +65,30 @@ def test_single(
 
     outputs = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
-    end_time = time.time()
-
-    print("Inputs: ", inputs)
-    print("Outputs: ", outputs)
-    print(f"Total single token time: {end_time - start_time}s")
+    return outputs
 
 
 def test_generate(
-    model: GPTJForCausalLM, tokenizer: PreTrainedTokenizer, sentence: str
+    model: GPTJForCausalLM, tokenizer: PreTrainedTokenizer, inputs: list[str]
 ):
-    inputs = [sentence]
     input_ids = tokenizer.batch_encode_plus(inputs, return_tensors="pt")["input_ids"]
+    input_ids = input_ids.to(model.device)
 
     gen_config: GenerationConfig = GenerationConfig(
         num_beams=1,
-        do_sample=False,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.eos_token_id,
+        do_sample=True,
+        top_k=1,
+        top_p=1.0,
+        max_length=55,
     )
 
     output_tokens = model.generate(input_ids, gen_config)
 
     outputs = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
-    print(outputs)
+    return outputs
 
 
 def main():
@@ -114,8 +111,17 @@ def main():
     model, tokenizer = get_model(model_dir, dtype, device)
 
     inputs: list[str] = ["Hello who are you?", "What is your name?"]
-    test_single(model, tokenizer, inputs)
-    # test_generate(model, tokenizer, inputs)
+    start_time = time.time()
+    
+    # outputs = test_single(model, tokenizer, inputs)
+    outputs = test_generate(model, tokenizer, inputs)
+
+    end_time = time.time()
+
+    print("Inputs: ", inputs)
+    print("Outputs: ", outputs)
+    print(f"Total single token time: {end_time - start_time}s")
+
 
 
 def cpu_test():
