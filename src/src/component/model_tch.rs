@@ -9,7 +9,7 @@ use tch::nn::{
     self, embedding, layer_norm, linear, Embedding, EmbeddingConfig, LayerNorm, LayerNormConfig,
     Linear, LinearConfig, Module, VarStore,
 };
-use tch::{Device, Kind, Result, TchError, Tensor};
+use tch::{Device, IndexOp, Kind, Result, TchError, Tensor};
 use tokenizers::Tokenizer;
 
 use super::model_base::GPTJConfig;
@@ -69,6 +69,46 @@ pub struct CausalOutput {
     pub past_key_values: Vec<(Tensor, Tensor)>,
     pub hidden_states: Vec<Tensor>,
     pub attentions: Vec<Tensor>,
+}
+
+trait LogitsWarper {
+    fn process(&self, input_ids: &Tensor, base_logits: &Tensor) -> Tensor;
+}
+
+struct TopKLogitsWarper {
+    k: i64,
+}
+
+struct TopPLogitsWarper {
+    p: f64,
+    min_tokens: i64,
+}
+
+impl LogitsWarper for TopKLogitsWarper {
+    fn process(&self, _: &Tensor, base_logits: &Tensor) -> Tensor {
+        let (top_k_logits, _) = base_logits.topk(self.k, -1, true, false);
+        let top_k_below = &top_k_logits.narrow(-1, top_k_logits.size()[1] - 1, 1);
+        let remove_indices = base_logits.less_tensor(&top_k_below);
+
+        let base_logits = base_logits.masked_fill(&remove_indices, 0);
+
+        base_logits.softmax(-1, Kind::Float).multinomial(1, false)
+    }
+}
+
+impl LogitsWarper for TopPLogitsWarper {
+    fn process(&self, _: &Tensor, base_logits: &Tensor) -> Tensor {
+        let (logits, sorted_indices) = base_logits.sort(-1, true);
+        let logits = logits.softmax(-1, Kind::Float);
+        let cumsum_logits = logits.cumsum(-1, Kind::Float);
+
+        let top_p_below = cumsum_logits.ge(self.p);
+        let _ = top_p_below.i((.., 0..self.min_tokens)).fill_(0);
+
+        let remove_indices = top_p_below.scatter(1, &sorted_indices, &top_p_below);
+
+        base_logits.masked_fill(&remove_indices, 0)
+    }
 }
 
 impl ModelLoader {
@@ -211,8 +251,16 @@ impl ModelLoader {
 
         // TODO: post processing (top_k, top_p, etc)
         let top_k = 1;
-        let top_p = 1.0;
+        let top_p = 0.0;
+        let min_p_tokens = 1;
         let is_greedy = false;
+
+        let top_p_warper = TopPLogitsWarper {
+            p: top_p,
+            min_tokens: min_p_tokens,
+        };
+
+        let top_k_warper = TopKLogitsWarper { k: top_k };
 
         let indices = if is_greedy {
             logits.argmax(-1, false)
@@ -222,27 +270,10 @@ impl ModelLoader {
 
             let base_logits = logits.reshape([-1, *logits.size().last().unwrap() as i64]);
 
-            // Top p
-            let (logits, sorted_indices) = base_logits.sort(-1, true);
-            let logits = logits.softmax(-1, Kind::Float);
-            let cumsum_logits = logits.cumsum(-1, Kind::Float);
-            let top_p_below = cumsum_logits.ge(top_p);
-            let remove_indices = top_p_below.scatter(1, &sorted_indices, &top_p_below);
+            let base_logits = top_p_warper.process(&input_ids, &base_logits);
+            let base_logits = top_k_warper.process(&input_ids, &base_logits);
 
-            let base_logits = base_logits.masked_fill(&remove_indices, 0);
-
-            // Top k
-            let (top_k_logits, _) = base_logits.topk(top_k, -1, true, false);
-            let top_k_below = &top_k_logits.narrow(-1, top_k_logits.size()[1] - 1, 1);
-            let remove_indices = base_logits.less_tensor(&top_k_below);
-
-            let base_logits = base_logits.masked_fill(&remove_indices, 0);
-
-            base_logits
-                .softmax(-1, Kind::Float)
-                .multinomial(1, false)
-                .narrow(-1, 0, 1)
-                .reshape(logits_shape)
+            base_logits.narrow(-1, 0, 1).reshape(logits_shape)
         };
 
         let indices = Vec::<Vec<i64>>::try_from(indices).unwrap();
