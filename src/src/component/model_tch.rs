@@ -879,10 +879,10 @@ impl Attention {
 
         let embed_positions = self.get_embed_positions(position_ids);
 
-        let repeated_position_ids = position_ids
-            .unsqueeze(-1)
-            .repeat(&[1, 1, *embed_positions.size().last().unwrap()])
-            .contiguous();
+        let repeated_position_ids =
+            position_ids
+                .unsqueeze(-1)
+                .repeat(&[1, 1, *embed_positions.size().last().unwrap()]);
 
         let sincos = embed_positions.gather(1, &repeated_position_ids, false);
         let sincos_half_count = sincos.size().last().unwrap() / 2;
