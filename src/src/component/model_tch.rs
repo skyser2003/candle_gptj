@@ -213,16 +213,17 @@ impl ModelLoader {
         &mut self,
         input_ids: Option<&Tensor>,
         input_embeds: Option<Tensor>,
-    ) -> Result<Tensor> {
-        let output = self.model.transformer.forward(
+        past_key_values: Option<Vec<(&Tensor, &Tensor)>>,
+    ) -> Result<CausalOutput> {
+        let mut output = self.model.transformer.forward(
             input_ids,
-            None,
+            past_key_values,
             None,
             None,
             None,
             None,
             input_embeds,
-            Some(false),
+            None,
             false,
             false,
         )?;
@@ -233,7 +234,9 @@ impl ModelLoader {
             .forward(&output.last_hidden_state)
             .to_kind(Kind::Float);
 
-        Ok(lm_logits)
+        output.last_hidden_state = lm_logits;
+
+        Ok(output)
     }
 
     pub fn inference(
@@ -266,9 +269,25 @@ impl ModelLoader {
         let mut embeds = self.model.transformer.create_embed(&input_ids);
 
         let mut gen_tokens = vec![vec![]; inputs.len()];
+        let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
 
         for _ in 0..config.max_tokens.unwrap() {
-            let all_logits = self.forward(None, Some(embeds.copy()))?;
+            let opt_past_key_values = if let Some(past_key_values) = &past_key_values {
+                Some(
+                    past_key_values
+                        .iter()
+                        .map(|(key, value)| (key, value))
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
+
+            let causal_output = self.forward(None, Some(embeds.copy()), opt_past_key_values)?;
+
+            let all_logits = causal_output.last_hidden_state;
+            past_key_values = Some(causal_output.past_key_values);
+
             let logits = all_logits.narrow(1, -1, 1);
 
             // Post processing
@@ -299,7 +318,7 @@ impl ModelLoader {
 
             let gen_embeds = self.model.transformer.create_embed(&indices);
 
-            embeds = Tensor::cat(&[embeds, gen_embeds], 1);
+            embeds = gen_embeds;
 
             for (tokens, index) in gen_tokens
                 .iter_mut()
@@ -921,6 +940,12 @@ impl Attention {
         let (k, v) = if let Some(layer_past) = layer_past {
             let past_key = layer_past.0;
             let past_value = layer_past.1;
+
+            println!("{:?}", past_key);
+            println!("{:?}", past_value);
+            println!("{:?}", k);
+            println!("{:?}", v);
+            println!("");
 
             let k = Tensor::cat(&[past_key, &k], -2);
             let v = Tensor::cat(&[past_value, &v], -2);
