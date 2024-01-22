@@ -84,6 +84,12 @@ struct TopPLogitsWarper {
     min_tokens: i64,
 }
 
+pub struct GenerationConfig {
+    top_k: Option<i64>,
+    top_p: Option<f64>,
+    max_tokens: Option<i32>,
+}
+
 impl LogitsWarper for TopKLogitsWarper {
     fn process(&self, _: &Tensor, base_logits: &Tensor) -> Tensor {
         let (top_k_logits, _) = base_logits.topk(self.k, -1, true, false);
@@ -182,7 +188,7 @@ impl ModelLoader {
 
         let mut instance = Self { model, tokenizer };
 
-        let _ = instance.inference(&["Hot loading"]);
+        let _ = instance.inference(&["Hot loading"], None);
 
         let end_time = Instant::now();
 
@@ -230,7 +236,11 @@ impl ModelLoader {
         Ok(lm_logits)
     }
 
-    pub fn inference(&mut self, inputs: &[&str]) -> Result<Vec<String>> {
+    pub fn inference(
+        &mut self,
+        inputs: &[&str],
+        config: Option<GenerationConfig>,
+    ) -> Result<Vec<String>> {
         let encodings = self.tokenizer.encode_batch(inputs.to_vec(), true).unwrap();
         let tokens = encodings
             .iter()
@@ -249,18 +259,23 @@ impl ModelLoader {
 
         let logits = self.forward(Some(&input_ids), None)?;
 
-        // TODO: post processing (top_k, top_p, etc)
-        let top_k = 1;
-        let top_p = 0.0;
-        let min_p_tokens = 1;
+        // Post processing
+        let config = config.unwrap_or(GenerationConfig {
+            max_tokens: Some(50),
+            top_k: Some(1),
+            top_p: Some(0.0),
+        });
+
         let is_greedy = false;
 
         let top_p_warper = TopPLogitsWarper {
-            p: top_p,
-            min_tokens: min_p_tokens,
+            p: config.top_p.unwrap(),
+            min_tokens: 1,
         };
 
-        let top_k_warper = TopKLogitsWarper { k: top_k };
+        let top_k_warper = TopKLogitsWarper {
+            k: config.top_k.unwrap(),
+        };
 
         let indices = if is_greedy {
             logits.argmax(-1, false)

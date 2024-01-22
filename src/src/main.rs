@@ -117,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
                 model_tch::ModelLoader::new(&model_dir, &tokenizer_dir, dtype_str, &device);
 
             let start_time = Instant::now();
-            let outputs = loader.inference(&inputs)?;
+            let outputs = loader.inference(&inputs, None)?;
             let end_time = Instant::now();
 
             (outputs, end_time - start_time)
