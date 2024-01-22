@@ -96,6 +96,9 @@ name = "anyhow"
 version = "1.0.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "080e9890a082662b09c1ad45f567faeeb47f22b5fb23895fbe1e651e718e25ca"
+dependencies = [
+ "backtrace",
+]
 
 [[package]]
 name = "autocfg"
@@ -223,6 +226,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57433f80b510bc603fd9e52c5a15eb44a8ac70112b95b28b0ab8fb1c1f001822"
 dependencies = [
  "byteorder",
+ "candle-kernels",
+ "cudarc",
  "gemm",
  "half 2.3.1",
  "memmap2 0.7.1",
@@ -235,6 +240,17 @@ dependencies = [
  "thiserror",
  "yoke",
  "zip",
+]
+
+[[package]]
+name = "candle-kernels"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aa5d745378eb85159b1d06650d0d1b14426503b327aebd469e0f1cfd306a8d3"
+dependencies = [
+ "anyhow",
+ "glob",
+ "rayon",
 ]
 
 [[package]]
@@ -530,6 +546,15 @@ checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
 dependencies = [
  "generic-array",
  "typenum",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.9.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1871a911a2b9a3f66a285896a719159985683bf9903aa2cf89e0c9f53e14552"
+dependencies = [
+ "half 2.3.1",
 ]
 
 [[package]]
@@ -973,6 +998,12 @@ name = "gimli"
 version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4271d37baee1b8c7e4b708028c57d816cf9d2434acb33a549475f78c181f6253"
+
+[[package]]
+name = "glob"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
 
 [[package]]
 name = "h2"
@@ -2420,9 +2451,6 @@ dependencies = [
  "anyhow",
  "cc",
  "libc",
- "serde",
- "serde_json",
- "ureq",
  "zip",
 ]
 
