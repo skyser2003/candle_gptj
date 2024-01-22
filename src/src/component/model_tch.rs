@@ -871,11 +871,12 @@ impl Attention {
     ) -> Result<(Tensor, Option<(Tensor, Tensor)>, Option<Tensor>)> {
         let qkv = self.qkv.as_ref().unwrap().forward(&hidden_states);
 
-        let qk = qkv.narrow(-1, 0, self.embed_size as i64 * 2);
-        let v = qkv.narrow(-1, self.embed_size as i64 * 2, self.embed_size as i64);
+        let qkv = qkv.split(self.embed_size as i64 * 2, -1);
+        let qk = &qkv[0];
+        let v = &qkv[1];
 
-        let qk = Self::split_heads(&qk, self.num_heads * 2, self.head_size, true);
-        let v = Self::split_heads(&v, self.num_heads, self.head_size, false);
+        let qk = Self::split_heads(qk, self.num_heads * 2, self.head_size, true);
+        let v = Self::split_heads(v, self.num_heads, self.head_size, false);
 
         let embed_positions = self.get_embed_positions(position_ids);
 
