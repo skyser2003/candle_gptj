@@ -37,6 +37,7 @@ def get_model(model_dir: str, dtype: str, device: str):
     model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    tokenizer.pad_token = tokenizer.eos_token
 
     # Hot loading
     hot_input_ids = tokenizer.batch_encode_plus(["Hot loading"], return_tensors="pt")[
@@ -56,7 +57,7 @@ def get_model(model_dir: str, dtype: str, device: str):
 def test_single(
     model: GPTJForCausalLM, tokenizer: PreTrainedTokenizer, inputs: list[str]
 ):
-    input_ids = tokenizer.batch_encode_plus(inputs, return_tensors="pt")["input_ids"]
+    input_ids = tokenizer.batch_encode_plus(inputs, padding=True, return_tensors="pt")["input_ids"]
     input_ids = input_ids.to(model.device)
 
     result = model.forward(input_ids)
@@ -71,7 +72,7 @@ def test_single(
 def test_generate(
     model: GPTJForCausalLM, tokenizer: PreTrainedTokenizer, inputs: list[str]
 ):
-    input_ids = tokenizer.batch_encode_plus(inputs, return_tensors="pt")["input_ids"]
+    input_ids = tokenizer.batch_encode_plus(inputs, padding=True, return_tensors="pt")["input_ids"]
     input_ids = input_ids.to(model.device)
 
     gen_config: GenerationConfig = GenerationConfig(
