@@ -550,7 +550,7 @@ impl CoreModel {
 
         if let Some(token_type_ids) = token_type_ids {
             let token_type_embeds = self.word_token_embedding.forward(&token_type_ids);
-            hidden_states = (hidden_states + token_type_embeds);
+            hidden_states = hidden_states + token_type_embeds;
         }
 
         let _ = hidden_states.dropout_(self.config.embd_pdrop as f64, false);
@@ -1024,7 +1024,7 @@ impl Attention {
         //.broadcast_to(attn_weights.size());
 
         let mut attn_weights = attn_weights.where_self(&causal_mask, &mask_value);
-        attn_weights.divide_(&self.scale_attn);
+        let _ = attn_weights.divide_(&self.scale_attn);
 
         if let Some(attention_mask) = attention_mask {
             attn_weights = (attn_weights + attention_mask);
