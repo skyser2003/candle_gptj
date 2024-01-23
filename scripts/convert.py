@@ -30,7 +30,7 @@ def main():
 
     loaded = {k: v.contiguous() for k, v in loaded.items()}
 
-    save_model(model, output_filename)
+    save_model(model, output_filename, {"format": "pt"})
 
 
 if __name__ == "__main__":
