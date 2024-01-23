@@ -188,7 +188,14 @@ impl ModelLoader {
 
         let mut instance = Self { model, tokenizer };
 
-        let _ = instance.inference(&["Hot loading"], None);
+        let _ = instance.inference(
+            &["Hot loading"],
+            Some(GenerationConfig {
+                max_tokens: Some(1),
+                top_k: Some(1),
+                top_p: Some(1.0),
+            }),
+        );
 
         let end_time = Instant::now();
 
