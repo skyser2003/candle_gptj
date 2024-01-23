@@ -1012,7 +1012,7 @@ impl Attention {
 
         let causal_mask = self
             .bias
-            .narrow(2, key_length - query_length, key_length)
+            .narrow(2, key_length - query_length, query_length)
             .narrow(3, 0, key_length);
 
         let query = query.to_kind(Kind::Float);
