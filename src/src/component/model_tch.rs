@@ -952,8 +952,8 @@ impl Attention {
             (k, v)
         };
 
-        let k = k.contiguous();
         let q = q.contiguous();
+        let k = k.contiguous();
         let v = v.contiguous();
 
         let (attn_output, attn_weights) =
