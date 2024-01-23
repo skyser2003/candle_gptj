@@ -32,7 +32,7 @@ def get_model(model_dir: str, dtype: str, device: str):
     else:
         torch_dtype = dtype_map[dtype]
 
-    model = GPTJForCausalLM.from_pretrained(model_dir, use_safetensors=False, torch_dtype=torch_dtype)
+    model = GPTJForCausalLM.from_pretrained(model_dir, use_safetensors=True, torch_dtype=torch_dtype)
     model = model.to(device)
     model.eval()
 
