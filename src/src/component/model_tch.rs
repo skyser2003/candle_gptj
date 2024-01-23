@@ -349,14 +349,17 @@ impl ModelLoader {
         return Ok(outputs);
     }
 
+    #[allow(dead_code)]
     pub fn get_tensors(&self) -> SafeTensors {
         self.model.tensors()
     }
 
+    #[allow(dead_code)]
     pub fn get_tokenizer(&self) -> &Tokenizer {
         &self.tokenizer
     }
 
+    #[allow(dead_code)]
     pub fn get_config(&self) -> &GPTJConfig {
         &self.model.config
     }
@@ -806,7 +809,7 @@ impl Attention {
             .to_device(*device);
 
         let mut scale_attn = Tensor::from_slice(&[head_size as f32]).to_device(*device);
-        scale_attn.sqrt_();
+        let _ = scale_attn.sqrt_();
 
         let embed_positions = Self::create_sinusoidal_positions(
             max_pos_embeddings,
@@ -941,12 +944,6 @@ impl Attention {
             let past_key = layer_past.0;
             let past_value = layer_past.1;
 
-            println!("{:?}", past_key);
-            println!("{:?}", past_value);
-            println!("{:?}", k);
-            println!("{:?}", v);
-            println!("");
-
             let k = Tensor::cat(&[past_key, &k], -2);
             let v = Tensor::cat(&[past_value, &v], -2);
 
@@ -1021,13 +1018,12 @@ impl Attention {
         let attn_weights = query.matmul(&key.transpose(-1, -2));
 
         let mask_value = Tensor::from_slice(&[f32::MIN]).to_device(attn_weights.device());
-        //.broadcast_to(attn_weights.size());
 
         let mut attn_weights = attn_weights.where_self(&causal_mask, &mask_value);
         let _ = attn_weights.divide_(&self.scale_attn);
 
         if let Some(attention_mask) = attention_mask {
-            attn_weights = (attn_weights + attention_mask);
+            attn_weights = attn_weights + attention_mask;
         }
 
         let mut attn_weights = attn_weights.softmax(-1, value.kind());
@@ -1168,19 +1164,4 @@ impl MLP {
 
         Ok(input)
     }
-}
-
-fn repeat_interleave(tensor: &Tensor, repeats: usize, dim: usize) -> Tensor {
-    let dim = dim as i64;
-    let tensor = tensor.unsqueeze(dim);
-
-    let mut shape = tensor.size();
-    shape[dim as usize] = repeats as i64;
-
-    let mut tensor = tensor.broadcast_to(shape);
-    let _ = tensor.transpose_(dim, dim + 1);
-    let tensor = tensor.flatten(dim, dim + 1);
-    let tensor = tensor.unsqueeze(dim);
-
-    tensor
 }

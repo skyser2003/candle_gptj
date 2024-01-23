@@ -62,9 +62,13 @@ async fn test_repeat_interleave() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 const LOOP_COUNT: usize = 10;
+
+#[cfg(test)]
 const MAT_SIZE: usize = 3000;
 
+#[cfg(test)]
 #[tokio::test]
 async fn cpu_test_candle() -> anyhow::Result<()> {
     use std::hint::black_box;

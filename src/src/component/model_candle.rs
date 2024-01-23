@@ -231,20 +231,24 @@ impl ModelLoader {
         Ok(outputs)
     }
 
+    #[allow(dead_code)]
     pub fn get_tensors(&self) -> SafeTensors {
         self.model.tensors()
     }
 
+    #[allow(dead_code)]
     pub fn get_tokenizer(&self) -> &Tokenizer {
         &self.tokenizer
     }
 
+    #[allow(dead_code)]
     pub fn get_config(&self) -> &GPTJConfig {
         &self.model.config
     }
 }
 
 impl CausalModel {
+    #[allow(dead_code)]
     fn tensors(&self) -> SafeTensors {
         let tensors = SafeTensors::deserialize(&self.buffer).unwrap();
 

@@ -4,7 +4,7 @@ mod test;
 use anyhow::anyhow;
 use clap::Parser;
 
-use candle_core::{backend::BackendDevice, CudaDevice};
+use candle_core::backend::BackendDevice;
 
 use component::model_candle;
 use component::model_tch;
@@ -122,7 +122,6 @@ async fn main() -> anyhow::Result<()> {
 
             (outputs, end_time - start_time)
         }
-        _ => unreachable!(),
     };
 
     println!("Inputs: {:?}", inputs);
