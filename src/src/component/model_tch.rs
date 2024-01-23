@@ -325,7 +325,13 @@ impl ModelLoader {
 
             let gen_embeds = self.model.transformer.create_embed(&indices);
 
-            embeds = gen_embeds;
+            // TODO not working yet
+            if true {
+                embeds = gen_embeds;
+            } else {
+                embeds = Tensor::cat(&[embeds, gen_embeds], 1);
+                past_key_values = None;
+            }
 
             for (tokens, index) in gen_tokens
                 .iter_mut()
