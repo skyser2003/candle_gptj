@@ -96,9 +96,7 @@ impl LogitsWarper for TopKLogitsWarper {
         let top_k_below = &top_k_logits.narrow(-1, top_k_logits.size()[1] - 1, 1);
         let remove_indices = base_logits.less_tensor(&top_k_below);
 
-        let base_logits = base_logits.masked_fill(&remove_indices, 0);
-
-        base_logits.softmax(-1, Kind::Float).multinomial(1, false)
+        base_logits.masked_fill(&remove_indices, 0)
     }
 }
 
@@ -324,7 +322,11 @@ impl ModelLoader {
                 let base_logits = top_p_warper.process(&input_ids, &base_logits);
                 let base_logits = top_k_warper.process(&input_ids, &base_logits);
 
-                base_logits.narrow(-1, 0, 1).reshape(logits_shape)
+                base_logits
+                    .softmax(-1, Kind::Float)
+                    .multinomial(1, false)
+                    .narrow(-1, 0, 1)
+                    .reshape(logits_shape)
             };
 
             let gen_embeds = self.model.transformer.create_embed(&indices);
