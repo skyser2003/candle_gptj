@@ -924,10 +924,10 @@ impl Attention {
 
         let embed_positions = self.get_embed_positions(position_ids);
 
-        let repeated_position_ids = position_ids
-            .unsqueeze(-1)
-            .repeat(&[1, 1, *embed_positions.size().last().unwrap()])
-            .contiguous();
+        let repeated_position_ids =
+            position_ids
+                .unsqueeze(-1)
+                .repeat(&[1, 1, *embed_positions.size().last().unwrap()]);
 
         let sincos = embed_positions.gather(1, &repeated_position_ids, false);
         let sincos_half_count = sincos.size().last().unwrap() / 2;
@@ -940,7 +940,7 @@ impl Attention {
             qk
         } else {
             let dim_index = 3;
-            let qk_rot = qk.narrow(dim_index, 0, self.rotary_dim as i64).contiguous();
+            let qk_rot = qk.narrow(dim_index, 0, self.rotary_dim as i64);
             let qk_pass = qk.narrow(
                 dim_index,
                 self.rotary_dim as i64,
@@ -973,10 +973,6 @@ impl Attention {
         } else {
             (k, v)
         };
-
-        let q = q.contiguous();
-        let k = k.contiguous();
-        let v = v.contiguous();
 
         let (attn_output, attn_weights) =
             self.get_attention(&q, &k, &v, attention_mask, head_mask)?;
