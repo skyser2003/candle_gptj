@@ -214,6 +214,10 @@ impl ModelLoader {
         buffer
     }
 
+    pub fn prepare_inputs_for_generation() {
+        // TODO
+    }
+
     pub fn forward(
         &mut self,
         input_ids: Option<&Tensor>,
