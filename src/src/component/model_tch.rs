@@ -96,7 +96,7 @@ impl LogitsWarper for TopKLogitsWarper {
         let top_k_below = &top_k_logits.narrow(-1, top_k_logits.size()[1] - 1, 1);
         let remove_indices = base_logits.less_tensor(&top_k_below);
 
-        base_logits.masked_fill(&remove_indices, 0)
+        base_logits.masked_fill(&remove_indices, -f64::INFINITY)
     }
 }
 
@@ -111,7 +111,7 @@ impl LogitsWarper for TopPLogitsWarper {
 
         let remove_indices = top_p_below.scatter(1, &sorted_indices, &top_p_below);
 
-        base_logits.masked_fill(&remove_indices, 0)
+        base_logits.masked_fill(&remove_indices, -f64::INFINITY)
     }
 }
 
