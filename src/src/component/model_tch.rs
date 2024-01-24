@@ -315,9 +315,9 @@ impl ModelLoader {
                 logits.argmax(-1, false)
             } else {
                 let mut logits_shape = logits.size();
-                logits_shape.pop();
+                let vocab_size = logits_shape.pop().unwrap();
 
-                let base_logits = logits.reshape([-1, *logits.size().last().unwrap() as i64]);
+                let base_logits = logits.reshape([-1, vocab_size]);
 
                 let base_logits = top_p_warper.process(&input_ids, &base_logits);
                 let base_logits = top_k_warper.process(&input_ids, &base_logits);
