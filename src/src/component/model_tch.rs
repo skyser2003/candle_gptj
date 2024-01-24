@@ -329,15 +329,8 @@ impl ModelLoader {
                     .reshape(logits_shape)
             };
 
-            let gen_embeds = self.model.transformer.create_embed(&indices);
-
-            // TODO not working yet
-            if true {
-                embeds = gen_embeds;
-            } else {
-                embeds = Tensor::cat(&[embeds, gen_embeds], 1);
-                past_key_values = None;
-            }
+            // Next loop preparation
+            embeds = self.model.transformer.create_embed(&indices);
 
             for (tokens, index) in gen_tokens
                 .iter_mut()
@@ -578,7 +571,7 @@ impl CoreModel {
             hidden_states = hidden_states + token_type_embeds;
         }
 
-        let _ = hidden_states.dropout_(self.config.embd_pdrop as f64, false);
+        hidden_states = hidden_states.dropout(self.config.embd_pdrop as f64, false);
 
         let mut partial_output_shape = Vec::new();
 
@@ -831,7 +824,7 @@ impl Attention {
             .to_device(*device);
 
         let mut scale_attn = Tensor::from_slice(&[head_size as f32]).to_device(*device);
-        let _ = scale_attn.sqrt_();
+        scale_attn = scale_attn.sqrt();
 
         let embed_positions = Self::create_sinusoidal_positions(
             max_pos_embeddings,
@@ -979,7 +972,7 @@ impl Attention {
 
         let attn_output = Self::merge_heads(&attn_output, self.num_heads, self.head_size);
         let mut attn_output = self.out.forward(&attn_output);
-        let _ = attn_output.dropout_(self.resid_pdrop as f64, false);
+        attn_output = attn_output.dropout(self.resid_pdrop as f64, false);
 
         let present = if use_cache {
             Some((k.to_kind(hidden_states.kind()), v))
@@ -1038,14 +1031,14 @@ impl Attention {
         let mask_value = Tensor::from_slice(&[f32::MIN]).to_device(attn_weights.device());
 
         let mut attn_weights = attn_weights.where_self(&causal_mask, &mask_value);
-        let _ = attn_weights.divide_(&self.scale_attn);
+        attn_weights = attn_weights.divide(&self.scale_attn);
 
         if let Some(attention_mask) = attention_mask {
             attn_weights = attn_weights + attention_mask;
         }
 
         let mut attn_weights = attn_weights.softmax(-1, value.kind());
-        let _ = attn_weights.dropout_(self.attn_pdrop as f64, false);
+        attn_weights = attn_weights.dropout(self.attn_pdrop as f64, false);
 
         if let Some(head_mask) = head_mask {
             attn_weights = attn_weights.mul(head_mask)
@@ -1175,10 +1168,10 @@ impl MLP {
     }
 
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        let mut input = self.fc_in.forward(&input);
-        let _ = input.gelu_("none");
-        let mut input = self.fc_out.forward(&input);
-        let _ = input.dropout_(self.resid_pdrop as f64, false);
+        let input = self.fc_in.forward(&input);
+        let input = input.gelu("none");
+        let input = self.fc_out.forward(&input);
+        let input = input.dropout(self.resid_pdrop as f64, false);
 
         Ok(input)
     }
