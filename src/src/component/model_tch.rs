@@ -220,6 +220,7 @@ impl ModelLoader {
         &mut self,
         input_ids: Option<&Tensor>,
         input_embeds: Option<Tensor>,
+        position_ids: Option<Tensor>,
         past_key_values: Option<Vec<(&Tensor, &Tensor)>>,
     ) -> Result<CausalOutput> {
         let mut output = self.model.transformer.forward(
@@ -227,7 +228,7 @@ impl ModelLoader {
             past_key_values,
             None,
             None,
-            None,
+            position_ids,
             None,
             input_embeds,
             None,
@@ -290,7 +291,10 @@ impl ModelLoader {
                 None
             };
 
-            let causal_output = self.forward(None, Some(embeds.copy()), opt_past_key_values)?;
+            // TODO: calculate position ids
+
+            let causal_output =
+                self.forward(None, Some(embeds.copy()), None, opt_past_key_values)?;
 
             let all_logits = causal_output.last_hidden_state;
             past_key_values = Some(causal_output.past_key_values);
@@ -512,7 +516,8 @@ impl CoreModel {
         };
 
         let (past_length, past_key_values) = if let Some(past_key_values) = past_key_values {
-            let past_length = *past_key_values[0].0.size().last().unwrap();
+            let past_key_size = past_key_values[0].0.size();
+            let past_length = past_key_size[past_key_size.len() - 2];
 
             (
                 past_length,
@@ -534,7 +539,9 @@ impl CoreModel {
                 *input_shape.last().unwrap() + past_length,
                 (Kind::Int64, device),
             );
-            position_ids.unsqueeze(0)
+            position_ids
+                .unsqueeze(0)
+                .view([-1, *input_shape.last().unwrap()])
         } else {
             position_ids.unwrap()
         };
