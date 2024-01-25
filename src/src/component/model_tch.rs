@@ -214,8 +214,44 @@ impl ModelLoader {
         buffer
     }
 
-    pub fn prepare_inputs_for_generation() {
-        // TODO
+    pub fn prepare_inputs_for_generation(
+        input_ids: &Tensor,
+        past_key_values: Option<Vec<(&Tensor, &Tensor)>>,
+        input_embeds: Option<Tensor>,
+        token_type_ids: Option<Tensor>,
+        attention_mask: Option<Tensor>,
+        position_ids: Option<Tensor>,
+    ) {
+        let mut local_input_ids = input_ids;
+        let mut token_type_ids = token_type_ids;
+        let mut position_ids = position_ids;
+
+        if past_key_values.is_some() {
+            local_input_ids = &input_ids.i((.., -1)).unsqueeze(-1).shallow_clone();
+
+            if let Some(token_type_ids_val) = &token_type_ids {
+                token_type_ids = Some(token_type_ids_val.i((.., -1)).unsqueeze(-1));
+            }
+        }
+
+        if attention_mask.is_some() && position_ids.is_none() {
+            let attention_mask = attention_mask.unwrap();
+            let mut local_position_ids = attention_mask.to_kind(Kind::Int64).cumsum(-1, None) - 1;
+            let mask = attention_mask.eq(0);
+            let _ = local_position_ids.masked_fill_(&mask, 1);
+
+            if past_key_values.is_some() {
+                local_position_ids = local_position_ids.i((.., -1)).unsqueeze(-1);
+            }
+
+            position_ids = Some(local_position_ids);
+        }
+
+        let (input_ids, input_embeds) = if input_embeds.is_some() && past_key_values.is_none() {
+            (None, input_embeds)
+        } else {
+            (Some(input_ids), None)
+        };
     }
 
     pub fn forward(
