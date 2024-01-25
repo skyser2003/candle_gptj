@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
         FrameWorkType::Torch => {
             let device = get_tch_device(device_type);
             let mut loader =
-                model_tch::ModelLoader::new(&model_dir, &tokenizer_dir, dtype_str, &device);
+                model_tch::ModelLoader::new(&model_dir, &tokenizer_dir, false, dtype_str, &device);
 
             let start_time = Instant::now();
             let outputs = loader.inference(&inputs, None)?;

@@ -17,6 +17,7 @@ use super::model_base::GPTJConfig;
 pub struct ModelLoader {
     model: CausalModel,
     tokenizer: Tokenizer,
+    is_train: bool,
 }
 
 pub struct CausalModel {
@@ -36,6 +37,7 @@ pub struct CoreModel {
     pub hidden_layers: Vec<HiddenLayer>,
     pub layernorm_final: LayerNorm,
     pub is_parallel: bool,
+    pub is_train: bool,
 }
 
 pub struct HiddenLayer {
@@ -56,12 +58,14 @@ pub struct Attention {
     pub embed_positions: Tensor,
     pub attn_pdrop: f32,
     pub resid_pdrop: f32,
+    pub is_train: bool,
 }
 
 pub struct MLP {
     pub fc_in: Linear,
     pub fc_out: Linear,
     pub resid_pdrop: f32,
+    pub is_train: bool,
 }
 
 pub struct CausalOutput {
@@ -119,6 +123,7 @@ impl ModelLoader {
     pub fn new(
         model_dir: &str,
         tokenizer_dir: &str,
+        is_train: bool,
         dtype: Option<String>,
         device: &Device,
     ) -> ModelLoader {
@@ -155,7 +160,7 @@ impl ModelLoader {
         let mut vs = VarStore::new(*device);
         let vr = &vs.root();
 
-        let mut core_model = CoreModel::new(vr, &dtype, dtype_min, &device, &config);
+        let mut core_model = CoreModel::new(vr, &dtype, dtype_min, &device, &config, is_train);
         let lm_head = linear(
             vr / "lm_head",
             config.n_embd as i64,
@@ -184,7 +189,11 @@ impl ModelLoader {
         let tokenizer_filename = tokenizer_dir.join("tokenizer.json");
         let tokenizer = Tokenizer::from_file(tokenizer_filename).unwrap();
 
-        let mut instance = Self { model, tokenizer };
+        let mut instance = Self {
+            model,
+            tokenizer,
+            is_train,
+        };
 
         let _ = instance.inference(
             &["Hot loading"],
@@ -432,6 +441,7 @@ impl CoreModel {
         dtype_min: f32,
         device: &Device,
         config: &GPTJConfig,
+        is_train: bool,
     ) -> CoreModel {
         let tf_vb = &(vr / ("transformer"));
 
@@ -467,6 +477,7 @@ impl CoreModel {
                     rotary_dim,
                     config.attn_pdrop,
                     config.resid_pdrop,
+                    is_train,
                     device,
                 );
 
@@ -492,6 +503,7 @@ impl CoreModel {
             hidden_layers: layers,
             layernorm_final,
             is_parallel: false,
+            is_train,
         }
     }
 
@@ -611,7 +623,7 @@ impl CoreModel {
             hidden_states = hidden_states + token_type_embeds;
         }
 
-        let _ = hidden_states.dropout_(self.config.embd_pdrop as f64, false);
+        let _ = hidden_states.dropout_(self.config.embd_pdrop as f64, self.is_train);
 
         let mut partial_output_shape = Vec::new();
 
@@ -745,6 +757,7 @@ impl HiddenLayer {
         rotary_dim: usize,
         attn_pdrop: f32,
         resid_pdrop: f32,
+        is_train: bool,
         device: &Device,
     ) -> HiddenLayer {
         let layer_norm_vb = layer_vb / "ln_1";
@@ -773,10 +786,11 @@ impl HiddenLayer {
             rotary_dim,
             attn_pdrop,
             resid_pdrop,
+            is_train,
             device,
         );
 
-        let mlp = MLP::new(&mlp_vb, inner_size, embed_size, resid_pdrop);
+        let mlp = MLP::new(&mlp_vb, inner_size, embed_size, resid_pdrop, is_train);
 
         HiddenLayer {
             layer_norm,
@@ -833,6 +847,7 @@ impl Attention {
         rotary_dim: usize,
         attn_pdrop: f32,
         resid_pdrop: f32,
+        is_train: bool,
         device: &Device,
     ) -> Attention {
         let embed_shape = [embed_size as i64, embed_size as i64];
@@ -885,6 +900,7 @@ impl Attention {
             embed_positions,
             attn_pdrop,
             resid_pdrop,
+            is_train,
         }
     }
 
@@ -1012,7 +1028,7 @@ impl Attention {
 
         let attn_output = Self::merge_heads(&attn_output, self.num_heads, self.head_size);
         let mut attn_output = self.out.forward(&attn_output);
-        let _ = attn_output.dropout_(self.resid_pdrop as f64, false);
+        let _ = attn_output.dropout_(self.resid_pdrop as f64, self.is_train);
 
         let present = if use_cache {
             Some((k.to_kind(hidden_states.kind()), v))
@@ -1078,7 +1094,7 @@ impl Attention {
         }
 
         let mut attn_weights = attn_weights.softmax(-1, value.kind());
-        let _ = attn_weights.dropout_(self.attn_pdrop as f64, false);
+        let _ = attn_weights.dropout_(self.attn_pdrop as f64, self.is_train);
 
         if let Some(head_mask) = head_mask {
             attn_weights = attn_weights.mul(head_mask)
@@ -1181,7 +1197,13 @@ impl Attention {
 }
 
 impl MLP {
-    pub fn new(vb: &nn::Path, inter_size: usize, embed_size: usize, resid_pdrop: f32) -> MLP {
+    pub fn new(
+        vb: &nn::Path,
+        inter_size: usize,
+        embed_size: usize,
+        resid_pdrop: f32,
+        is_train: bool,
+    ) -> MLP {
         let fc_in = linear(
             vb / "fc_in",
             embed_size as i64,
@@ -1204,6 +1226,7 @@ impl MLP {
             fc_in,
             fc_out,
             resid_pdrop,
+            is_train,
         }
     }
 
@@ -1211,7 +1234,7 @@ impl MLP {
         let mut input = self.fc_in.forward(&input);
         let _ = input.gelu_("none");
         let mut input = self.fc_out.forward(&input);
-        let _ = input.dropout_(self.resid_pdrop as f64, false);
+        let _ = input.dropout_(self.resid_pdrop as f64, self.is_train);
 
         Ok(input)
     }
