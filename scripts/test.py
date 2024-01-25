@@ -111,7 +111,7 @@ def main():
 
     model, tokenizer = get_model(model_dir, dtype, device)
 
-    inputs: list[str] = ["Hello who are you?", "What is your name?"]
+    inputs: list[str] = ["Hello who are you?", "What is your name? And your job?"]
     start_time = time.time()
     
     # outputs = test_single(model, tokenizer, inputs)

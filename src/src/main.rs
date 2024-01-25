@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
         FrameWorkType::Torch
     };
 
-    let inputs = ["Hello who are you?", "What is your name?"];
+    let inputs = ["Hello who are you?", "What is your name? And your job?"];
 
     let (outputs, elapsed) = match framework {
         FrameWorkType::Candle => {
