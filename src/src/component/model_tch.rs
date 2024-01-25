@@ -857,26 +857,12 @@ impl Attention {
             bs: None,
         };
 
-        let mut bias_vec = vec![false; max_pos_embeddings * max_pos_embeddings];
-
-        for i in 0..max_pos_embeddings {
-            for j in 0..max_pos_embeddings {
-                let is_tril = i <= j;
-
-                if is_tril {
-                    bias_vec[i + j * max_pos_embeddings] = true;
-                }
-            }
-        }
-
-        let bias = Tensor::from_slice(&bias_vec)
-            .reshape([
-                1i64,
-                1,
-                max_pos_embeddings as i64,
-                max_pos_embeddings as i64,
-            ])
-            .to_device(*device);
+        let mut bias = Tensor::ones(
+            [max_pos_embeddings as i64, max_pos_embeddings as i64],
+            (Kind::Bool, *device),
+        );
+        let _ = bias.tril_(0);
+        let bias = bias.view([1, 1, max_pos_embeddings as i64, max_pos_embeddings as i64]);
 
         let mut scale_attn = Tensor::from_slice(&[head_size as f32]).to_device(*device);
         let _ = scale_attn.sqrt_();
