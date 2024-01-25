@@ -10,7 +10,7 @@ use tch::nn::{
     Linear, LinearConfig, Module, VarStore,
 };
 use tch::{Device, IndexOp, Kind, Result, TchError, Tensor};
-use tokenizers::Tokenizer;
+use tokenizers::{PaddingParams, Tokenizer};
 
 use super::model_base::GPTJConfig;
 
@@ -176,6 +176,22 @@ impl ModelLoader {
         let vb = SafeTensors::deserialize(&buffer);
         core_model.post_load(&vb.unwrap(), dtype, *device);
 
+        let tokenizer_dir = std::path::Path::new(tokenizer_dir);
+        let tokenizer_filename = tokenizer_dir.join("tokenizer.json");
+        let mut tokenizer = Tokenizer::from_file(tokenizer_filename).unwrap();
+
+        let pad_token_id = config.pad_token_id.unwrap_or(config.eos_token_id);
+        let pad_token = tokenizer.decode(&[pad_token_id as u32], false).unwrap();
+
+        tokenizer.with_padding(Some(PaddingParams {
+            pad_id: pad_token_id as u32,
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
+            direction: tokenizers::PaddingDirection::Left,
+            pad_to_multiple_of: None,
+            pad_token,
+            pad_type_id: 0, // TODO: what is this?
+        }));
+
         let model = CausalModel {
             model_filename,
             buffer,
@@ -184,10 +200,6 @@ impl ModelLoader {
             transformer: core_model,
             lm_head,
         };
-
-        let tokenizer_dir = std::path::Path::new(tokenizer_dir);
-        let tokenizer_filename = tokenizer_dir.join("tokenizer.json");
-        let tokenizer = Tokenizer::from_file(tokenizer_filename).unwrap();
 
         let mut instance = Self {
             model,
@@ -330,6 +342,8 @@ impl ModelLoader {
         let input_ids = Tensor::from_slice(&input_tokens)
             .reshape([encodings.len() as i64, -1])
             .to_device(self.model.device);
+
+        // TODO: attention_mask required for paddings
 
         let mut embeds = self.model.transformer.create_embed(&input_ids);
 
