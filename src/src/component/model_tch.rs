@@ -223,6 +223,16 @@ impl ModelLoader {
         buffer
     }
 
+    pub fn get_position_ids(input_length: i64, past_length: i64, device: Device) -> Tensor {
+        let position_ids = Tensor::arange_start(
+            past_length,
+            past_length + input_length,
+            (Kind::Int64, device),
+        );
+
+        position_ids.unsqueeze(0).view([-1, input_length])
+    }
+
     pub fn prepare_inputs_for_generation(
         input_ids: &Tensor,
         past_key_values: Option<Vec<(&Tensor, &Tensor)>>,
@@ -327,21 +337,32 @@ impl ModelLoader {
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
 
         for _ in 0..config.max_tokens.unwrap() {
-            let opt_past_key_values = if let Some(past_key_values) = &past_key_values {
-                Some(
-                    past_key_values
-                        .iter()
-                        .map(|(key, value)| (key, value))
-                        .collect::<Vec<_>>(),
+            let (opt_past_key_values, past_length) = if let Some(past_key_values) = &past_key_values
+            {
+                let pkv_size = past_key_values[0].0.size();
+
+                (
+                    Some(
+                        past_key_values
+                            .iter()
+                            .map(|(key, value)| (key, value))
+                            .collect::<Vec<_>>(),
+                    ),
+                    pkv_size[pkv_size.len() - 2],
                 )
             } else {
-                None
+                (None, 0)
             };
 
-            // TODO: calculate position ids
+            let input_length = embeds.size()[embeds.size().len() - 2];
+            let position_ids = Self::get_position_ids(input_length, past_length, self.model.device);
 
-            let causal_output =
-                self.forward(None, Some(embeds.copy()), None, opt_past_key_values)?;
+            let causal_output = self.forward(
+                None,
+                Some(embeds.copy()),
+                Some(position_ids),
+                opt_past_key_values,
+            )?;
 
             let all_logits = causal_output.last_hidden_state;
             past_key_values = Some(causal_output.past_key_values);
@@ -581,14 +602,9 @@ impl CoreModel {
         };
 
         let position_ids = if position_ids.is_none() {
-            let position_ids = Tensor::arange_start(
-                past_length as i64,
-                *input_shape.last().unwrap() + past_length,
-                (Kind::Int64, device),
-            );
-            position_ids
-                .unsqueeze(0)
-                .view([-1, *input_shape.last().unwrap()])
+            let input_length = *input_shape.last().unwrap();
+
+            ModelLoader::get_position_ids(input_length, past_length, device)
         } else {
             position_ids.unwrap()
         };
