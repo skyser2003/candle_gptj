@@ -245,6 +245,10 @@ impl ModelLoader {
         position_ids.unsqueeze(0).view([-1, input_length])
     }
 
+    pub fn get_attention_mask(batch_size: i64, input_length: i64, device: Device) -> Tensor {
+        Tensor::ones([batch_size, input_length], (Kind::Int64, device))
+    }
+
     pub fn prepare_inputs_for_generation(
         input_ids: &Tensor,
         past_key_values: Option<Vec<(&Tensor, &Tensor)>>,
@@ -290,12 +294,13 @@ impl ModelLoader {
         input_ids: Option<&Tensor>,
         input_embeds: Option<Tensor>,
         position_ids: Option<Tensor>,
+        attention_mask: Option<Tensor>,
         past_key_values: Option<Vec<(&Tensor, &Tensor)>>,
     ) -> Result<CausalOutput> {
         let mut output = self.model.transformer.forward(
             input_ids,
             past_key_values,
-            None,
+            attention_mask,
             None,
             position_ids,
             None,
@@ -346,11 +351,14 @@ impl ModelLoader {
         // TODO: attention_mask required for paddings
 
         let mut embeds = self.model.transformer.create_embed(&input_ids);
+        let mut input_length = embeds.size()[embeds.size().len() - 2];
 
         let mut gen_tokens = vec![vec![]; inputs.len()];
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
 
-        for _ in 0..config.max_tokens.unwrap() {
+        let max_gen_tokens = config.max_tokens.unwrap() as i64 - input_ids.size()[1];
+
+        for _ in 0..max_gen_tokens {
             let (opt_past_key_values, past_length) = if let Some(past_key_values) = &past_key_values
             {
                 let pkv_size = past_key_values[0].0.size();
@@ -368,13 +376,18 @@ impl ModelLoader {
                 (None, 0)
             };
 
-            let input_length = embeds.size()[embeds.size().len() - 2];
-            let position_ids = Self::get_position_ids(input_length, past_length, self.model.device);
+            let batch_size = embeds.size()[0];
+            let embed_length = embeds.size()[embeds.size().len() - 2];
+
+            let position_ids = Self::get_position_ids(embed_length, past_length, self.model.device);
+            let attention_mask =
+                Self::get_attention_mask(batch_size, input_length, self.model.device);
 
             let causal_output = self.forward(
                 None,
                 Some(embeds.copy()),
                 Some(position_ids),
+                Some(attention_mask),
                 opt_past_key_values,
             )?;
 
@@ -415,6 +428,7 @@ impl ModelLoader {
 
             // Next loop preparation
             embeds = self.model.transformer.create_embed(&indices);
+            input_length += 1;
 
             for (tokens, index) in gen_tokens
                 .iter_mut()
@@ -552,7 +566,7 @@ impl CoreModel {
         &mut self,
         input_ids: Option<&Tensor>,
         past_key_values: Option<Vec<(&Tensor, &Tensor)>>,
-        attention_mask: Option<&Tensor>,
+        attention_mask: Option<Tensor>,
         token_type_ids: Option<&Tensor>,
         position_ids: Option<Tensor>,
         head_mask: Option<&Tensor>,
