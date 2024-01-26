@@ -36,7 +36,7 @@ def get_model(model_dir: str, dtype: str, device: str):
     model = model.to(device)
     model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, padding_side="left")
     tokenizer.pad_token = tokenizer.eos_token
 
     # Hot loading
@@ -63,7 +63,7 @@ def test_single(
     result = model.forward(input_ids)
     logits = result["logits"]
     output_tokens = torch.argmax(logits, dim=-1)
-
+    
     outputs = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
     return outputs
@@ -82,7 +82,7 @@ def test_generate(
         do_sample=True,
         top_k=1,
         top_p=1.0,
-        max_length=55,
+        max_length=50,
     )
 
     output_tokens = model.generate(input_ids, gen_config)
