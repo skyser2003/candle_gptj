@@ -348,8 +348,6 @@ impl ModelLoader {
             .reshape([encodings.len() as i64, -1])
             .to_device(self.model.device);
 
-        // TODO: attention_mask required for paddings
-
         let mut embeds = self.model.transformer.create_embed(&input_ids);
         let mut input_length = embeds.size()[embeds.size().len() - 2];
 
