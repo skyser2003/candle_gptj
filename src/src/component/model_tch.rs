@@ -245,8 +245,33 @@ impl ModelLoader {
         position_ids.unsqueeze(0).view([-1, input_length])
     }
 
-    pub fn get_attention_mask(batch_size: i64, input_length: i64, device: Device) -> Tensor {
-        Tensor::ones([batch_size, input_length], (Kind::Int64, device))
+    pub fn get_attention_mask(
+        pad_token_id: i64,
+        input_tokens: &Vec<Vec<i64>>,
+        device: Device,
+    ) -> Tensor {
+        let input_length = input_tokens[0].len() as i64;
+
+        let mut mask_tensors = vec![];
+        for tokens in input_tokens {
+            let mut start_index = -1;
+
+            for (token_index, &token) in tokens.iter().enumerate() {
+                if token != pad_token_id {
+                    start_index = token_index as i64;
+                    break;
+                }
+            }
+
+            let mask = Tensor::ones([1, input_length], (Kind::Int64, device));
+            if start_index != -1 {
+                let _ = mask.i((.., 0..start_index)).fill_(0);
+            }
+
+            mask_tensors.push(mask);
+        }
+
+        Tensor::cat(&mask_tensors, 0)
     }
 
     pub fn prepare_inputs_for_generation(
@@ -333,7 +358,7 @@ impl ModelLoader {
         });
 
         let encodings = self.tokenizer.encode_batch(inputs.to_vec(), true).unwrap();
-        let input_tokens = encodings
+        let input_tokens_batch = encodings
             .iter()
             .map(|enc| {
                 enc.get_ids()
@@ -341,18 +366,30 @@ impl ModelLoader {
                     .map(|val| *val as i64)
                     .collect::<Vec<_>>()
             })
+            .collect::<Vec<_>>();
+
+        let input_tokens_flat = input_tokens_batch
+            .clone()
+            .into_iter()
             .flatten()
             .collect::<Vec<_>>();
 
-        let input_ids = Tensor::from_slice(&input_tokens)
+        let input_ids = Tensor::from_slice(&input_tokens_flat)
             .reshape([encodings.len() as i64, -1])
             .to_device(self.model.device);
 
         let mut embeds = self.model.transformer.create_embed(&input_ids);
+        let batch_size = embeds.size()[0];
         let mut input_length = embeds.size()[embeds.size().len() - 2];
 
         let mut gen_tokens = vec![vec![]; inputs.len()];
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
+
+        let mut attention_mask = Self::get_attention_mask(
+            self.get_config().eos_token_id as i64,
+            &input_tokens_batch,
+            self.model.device,
+        );
 
         let max_gen_tokens = config.max_tokens.unwrap() as i64 - input_ids.size()[1];
         let max_gen_tokens = max_gen_tokens.max(1);
@@ -375,12 +412,9 @@ impl ModelLoader {
                 (None, 0)
             };
 
-            let batch_size = embeds.size()[0];
             let embed_length = embeds.size()[embeds.size().len() - 2];
 
             let position_ids = Self::get_position_ids(embed_length, past_length, self.model.device);
-            let attention_mask =
-                Self::get_attention_mask(batch_size, input_length, self.model.device);
 
             let causal_output = self.forward(
                 None,
@@ -427,6 +461,12 @@ impl ModelLoader {
 
             // Next loop preparation
             embeds = self.model.transformer.create_embed(&indices);
+            attention_mask = Self::get_attention_mask(
+                self.get_config().eos_token_id as i64,
+                &Vec::<Vec<i64>>::try_from(&indices).unwrap(),
+                self.model.device,
+            );
+
             input_length += 1;
 
             for (tokens, index) in gen_tokens
