@@ -264,6 +264,7 @@ impl ModelLoader {
             }
 
             let mask = Tensor::ones([1, input_length], (Kind::Int64, device));
+
             if start_index != -1 {
                 let _ = mask.i((.., 0..start_index)).fill_(0);
             }
@@ -380,16 +381,39 @@ impl ModelLoader {
 
         let mut embeds = self.model.transformer.create_embed(&input_ids);
 
-        let mut all_input_lengths = inputs.iter().map(|input| input.len()).collect::<Vec<_>>();
+        // Count not zero tokens
+        let pad_token_id = self
+            .get_config()
+            .pad_token_id
+            .unwrap_or(self.get_config().eos_token_id) as i64;
+
+        let mut all_input_lengths = input_tokens_batch
+            .iter()
+            .map(|tokens| {
+                let mut start_index = tokens.len();
+
+                for (token_index, &token) in tokens.iter().enumerate() {
+                    if token != pad_token_id {
+                        start_index = token_index;
+                        break;
+                    }
+                }
+
+                (tokens.len() - start_index) as i64
+            })
+            .collect::<Vec<_>>();
+
+        let mut original_indices = all_input_lengths
+            .iter()
+            .enumerate()
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
 
         let mut gen_tokens = vec![vec![]; inputs.len()];
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
 
-        let mut attention_mask = Self::get_attention_mask(
-            self.get_config().eos_token_id as i64,
-            &input_tokens_batch,
-            self.model.device,
-        );
+        let mut attention_mask =
+            Self::get_attention_mask(pad_token_id, &input_tokens_batch, self.model.device);
 
         let max_gen_tokens = config.max_tokens.unwrap() as i64 - input_ids.size()[1];
         let max_gen_tokens = max_gen_tokens.max(1);
@@ -462,16 +486,15 @@ impl ModelLoader {
             // Next loop preparation
             embeds = self.model.transformer.create_embed(&indices);
             attention_mask = Self::get_attention_mask(
-                self.get_config().eos_token_id as i64,
+                pad_token_id,
                 &Vec::<Vec<i64>>::try_from(&indices).unwrap(),
                 self.model.device,
             );
 
-            for (tokens, index) in gen_tokens
-                .iter_mut()
-                .zip(&Vec::<Vec<i64>>::try_from(indices).unwrap())
-            {
-                tokens.push(index[0]);
+            let gen_indices = Vec::<Vec<i64>>::try_from(indices).unwrap();
+
+            for (&real_index, next_token) in original_indices.iter().zip(gen_indices) {
+                gen_tokens[real_index].push(next_token[0]);
             }
 
             // Remove end criteria texts
@@ -479,26 +502,31 @@ impl ModelLoader {
                 .iter_mut()
                 .for_each(|input_length| *input_length += 1);
 
-            let done_texts = all_input_lengths
+            let mut finished_texts = vec![];
+            let mut unfinished_texts = vec![];
+
+            all_input_lengths
                 .iter()
                 .enumerate()
-                .filter_map(|(i, input_length)| {
-                    if config.max_tokens.unwrap() as usize <= *input_length {
-                        Some(i as i64)
+                .for_each(|(index, &input_length)| {
+                    if config.max_tokens.unwrap() as i64 <= input_length {
+                        finished_texts.push(index as i64);
                     } else {
-                        None
+                        unfinished_texts.push(index as i64);
                     }
-                })
-                .collect::<Vec<_>>();
+                });
 
-            if !done_texts.is_empty() {
-                println!("{:?}, {:?}", all_input_lengths, done_texts);
-
-                let delete_mask = Tensor::ones(embeds.size()[0], (Kind::Bool, embeds.device()));
-                let _ = delete_mask.i((0, 1)).fill_(0);
-
-                println!("{}", delete_mask);
+            if finished_texts.len() == 0 {
+                continue;
             }
+
+            unfinished_texts.iter().rev().for_each(|&index| {
+                original_indices.remove(index as usize);
+                all_input_lengths.remove(index as usize);
+            });
+
+            let select_mask = Tensor::from_slice(&unfinished_texts);
+            embeds = embeds.index_select(0, &select_mask);
         }
 
         let indices = gen_tokens;
