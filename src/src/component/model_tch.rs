@@ -379,8 +379,8 @@ impl ModelLoader {
             .to_device(self.model.device);
 
         let mut embeds = self.model.transformer.create_embed(&input_ids);
-        let batch_size = embeds.size()[0];
-        let mut input_length = embeds.size()[embeds.size().len() - 2];
+
+        let mut all_input_lengths = inputs.iter().map(|input| input.len()).collect::<Vec<_>>();
 
         let mut gen_tokens = vec![vec![]; inputs.len()];
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
@@ -467,13 +467,37 @@ impl ModelLoader {
                 self.model.device,
             );
 
-            input_length += 1;
-
             for (tokens, index) in gen_tokens
                 .iter_mut()
                 .zip(&Vec::<Vec<i64>>::try_from(indices).unwrap())
             {
                 tokens.push(index[0]);
+            }
+
+            // Remove end criteria texts
+            all_input_lengths
+                .iter_mut()
+                .for_each(|input_length| *input_length += 1);
+
+            let done_texts = all_input_lengths
+                .iter()
+                .enumerate()
+                .filter_map(|(i, input_length)| {
+                    if config.max_tokens.unwrap() as usize <= *input_length {
+                        Some(i as i64)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            if !done_texts.is_empty() {
+                println!("{:?}, {:?}", all_input_lengths, done_texts);
+
+                let delete_mask = Tensor::ones(embeds.size()[0], (Kind::Bool, embeds.device()));
+                let _ = delete_mask.i((0, 1)).fill_(0);
+
+                println!("{}", delete_mask);
             }
         }
 
