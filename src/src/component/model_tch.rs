@@ -355,6 +355,7 @@ impl ModelLoader {
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
 
         let max_gen_tokens = config.max_tokens.unwrap() as i64 - input_ids.size()[1];
+        let max_gen_tokens = max_gen_tokens.max(1);
 
         for _ in 0..max_gen_tokens {
             let (opt_past_key_values, past_length) = if let Some(past_key_values) = &past_key_values
