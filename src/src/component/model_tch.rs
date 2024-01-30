@@ -375,11 +375,9 @@ impl ModelLoader {
             .flatten()
             .collect::<Vec<_>>();
 
-        let input_ids = Tensor::from_slice(&input_tokens_flat)
+        let mut input_ids = Tensor::from_slice(&input_tokens_flat)
             .reshape([encodings.len() as i64, -1])
             .to_device(self.model.device);
-
-        let mut embeds = self.model.transformer.create_embed(&input_ids);
 
         // Count not zero tokens
         let pad_token_id = self
@@ -409,7 +407,7 @@ impl ModelLoader {
             .map(|(i, _)| i)
             .collect::<Vec<_>>();
 
-        let mut gen_tokens = vec![vec![]; inputs.len()];
+        let mut all_gen_tokens = vec![vec![]; inputs.len()];
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
 
         let mut attention_mask =
@@ -436,9 +434,15 @@ impl ModelLoader {
                 (None, 0)
             };
 
+            let embeds = self.model.transformer.create_embed(&input_ids);
             let embed_length = embeds.size()[embeds.size().len() - 2];
 
             let position_ids = Self::get_position_ids(embed_length, past_length, self.model.device);
+            let attention_mask = Self::get_attention_mask(
+                pad_token_id,
+                &Vec::<Vec<i64>>::try_from(&input_ids).unwrap(),
+                self.model.device,
+            );
 
             let causal_output = self.forward(
                 None,
@@ -465,7 +469,7 @@ impl ModelLoader {
                 k: config.top_k.unwrap(),
             };
 
-            let indices = if is_greedy {
+            let gen_ids = if is_greedy {
                 logits.argmax(-1, false)
             } else {
                 let mut logits_shape = logits.size();
@@ -484,17 +488,11 @@ impl ModelLoader {
             };
 
             // Next loop preparation
-            embeds = self.model.transformer.create_embed(&indices);
-            attention_mask = Self::get_attention_mask(
-                pad_token_id,
-                &Vec::<Vec<i64>>::try_from(&indices).unwrap(),
-                self.model.device,
-            );
+            let gen_tokens = Vec::<Vec<i64>>::try_from(&gen_ids).unwrap();
+            input_ids = gen_ids;
 
-            let gen_indices = Vec::<Vec<i64>>::try_from(indices).unwrap();
-
-            for (&real_index, next_token) in original_indices.iter().zip(gen_indices) {
-                gen_tokens[real_index].push(next_token[0]);
+            for (&real_index, next_token) in original_indices.iter().zip(gen_tokens) {
+                all_gen_tokens[real_index].push(next_token[0]);
             }
 
             // Remove end criteria texts
@@ -530,9 +528,7 @@ impl ModelLoader {
             }
 
             let select_mask = Tensor::from_slice(&unfinished_texts).to_device(embeds.device());
-            embeds = embeds.index_select(0, &select_mask);
-
-            attention_mask = attention_mask.index_select(0, &select_mask);
+            input_ids = input_ids.index_select(0, &select_mask);
 
             for (key, value) in past_key_values.as_mut().unwrap().iter_mut() {
                 *key = key.index_select(0, &select_mask);
@@ -540,7 +536,7 @@ impl ModelLoader {
             }
         }
 
-        let indices = gen_tokens;
+        let indices = all_gen_tokens;
         let indices = indices
             .iter()
             .map(|nested_vec| {
