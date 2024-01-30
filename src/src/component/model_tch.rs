@@ -17,6 +17,7 @@ use super::model_base::GPTJConfig;
 pub struct ModelLoader {
     model: CausalModel,
     tokenizer: Tokenizer,
+    pad_token_id: usize,
     is_train: bool,
 }
 
@@ -206,6 +207,7 @@ impl ModelLoader {
         let mut instance = Self {
             model,
             tokenizer,
+            pad_token_id,
             is_train,
         };
 
@@ -381,11 +383,8 @@ impl ModelLoader {
             .reshape([encodings.len() as i64, -1])
             .to_device(self.model.device);
 
-        // Count not zero tokens
-        let pad_token_id = self
-            .get_config()
-            .pad_token_id
-            .unwrap_or(self.get_config().eos_token_id) as i64;
+        // Count non-zero tokens
+        let pad_token_id = self.pad_token_id as i64;
 
         let mut all_input_lengths = input_tokens_batch
             .iter()
