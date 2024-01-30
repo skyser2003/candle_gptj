@@ -489,7 +489,7 @@ impl ModelLoader {
             let gen_tokens = Vec::<Vec<i64>>::try_from(&gen_ids).unwrap();
             input_ids = gen_ids;
 
-            for (&real_index, next_token) in original_indices.iter().zip(gen_tokens) {
+            for (&real_index, next_token) in original_indices.iter().zip(&gen_tokens) {
                 all_gen_tokens[real_index].push(next_token[0]);
             }
 
@@ -503,9 +503,12 @@ impl ModelLoader {
 
             all_input_lengths
                 .iter()
+                .zip(&gen_tokens)
                 .enumerate()
-                .for_each(|(index, &input_length)| {
-                    if config.max_tokens.unwrap() as i64 <= input_length {
+                .for_each(|(index, (&input_length, gen_token))| {
+                    if config.max_tokens.unwrap() as i64 <= input_length
+                        || gen_token[0] == self.get_config().eos_token_id as i64
+                    {
                         finished_texts.push(index as i64);
                     } else {
                         unfinished_texts.push(index as i64);
