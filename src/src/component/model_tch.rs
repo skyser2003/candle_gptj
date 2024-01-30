@@ -176,6 +176,8 @@ impl ModelLoader {
         let vb = SafeTensors::deserialize(&buffer);
         core_model.post_load(&vb.unwrap(), dtype, *device);
 
+        vs.freeze();
+
         let tokenizer_dir = std::path::Path::new(tokenizer_dir);
         let tokenizer_filename = tokenizer_dir.join("tokenizer.json");
         let mut tokenizer = Tokenizer::from_file(tokenizer_filename).unwrap();
@@ -1071,6 +1073,8 @@ impl Attention {
         let qkv_weight = Tensor::cat(&[q_proj_weight, k_proj_weight, v_proj_weight], 0)
             .to_kind(kind)
             .to_device(device);
+
+        // let qkv_weight = qkv_weight.set_requires_grad(false);
 
         let qkv = Linear {
             ws: qkv_weight,

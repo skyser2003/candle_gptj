@@ -85,7 +85,8 @@ def test_generate(
         max_length=50,
     )
 
-    output_tokens = model.generate(input_ids, gen_config)
+    with torch.no_grad():
+        output_tokens = model.generate(input_ids, gen_config)
 
     outputs = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
