@@ -214,7 +214,7 @@ impl ModelLoader {
         let _ = instance.inference(
             &["Hot loading"],
             Some(GenerationConfig {
-                max_tokens: Some(1),
+                max_tokens: Some(5),
                 top_k: Some(1),
                 top_p: Some(1.0),
             }),

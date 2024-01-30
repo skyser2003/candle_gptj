@@ -45,7 +45,18 @@ def get_model(model_dir: str, dtype: str, device: str):
         "input_ids"
     ]
     hot_input_ids = hot_input_ids.to(model.device)
-    model.forward(hot_input_ids)
+    gen_config = GenerationConfig(
+        num_beams=1,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.eos_token_id,
+        do_sample=True,
+        top_k=1,
+        top_p=1.0,
+        max_length=5,
+    )
+
+    with torch.no_grad():
+        model.generate(hot_input_ids, gen_config)
 
     end_time = time.time()
 
@@ -76,7 +87,7 @@ def test_generate(
     input_ids = tokenizer.batch_encode_plus(inputs, padding=True, return_tensors="pt")["input_ids"]
     input_ids = input_ids.to(model.device)
 
-    gen_config: GenerationConfig = GenerationConfig(
+    gen_config = GenerationConfig(
         num_beams=1,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.eos_token_id,
