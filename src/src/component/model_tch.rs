@@ -525,8 +525,19 @@ impl ModelLoader {
                 all_input_lengths.remove(index as usize);
             });
 
-            let select_mask = Tensor::from_slice(&unfinished_texts);
+            if unfinished_texts.len() == 0 {
+                break;
+            }
+
+            let select_mask = Tensor::from_slice(&unfinished_texts).to_device(embeds.device());
             embeds = embeds.index_select(0, &select_mask);
+
+            attention_mask = attention_mask.index_select(0, &select_mask);
+
+            for (key, value) in past_key_values.as_mut().unwrap().iter_mut() {
+                *key = key.index_select(0, &select_mask);
+                *value = value.index_select(0, &select_mask);
+            }
         }
 
         let indices = gen_tokens;
