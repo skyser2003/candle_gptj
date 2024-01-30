@@ -553,6 +553,12 @@ impl ModelLoader {
 
         let outputs = self.tokenizer.decode_batch(&indices, true).unwrap();
 
+        let outputs = inputs
+            .iter()
+            .zip(outputs)
+            .map(|(input, output)| input.to_string() + &output)
+            .collect::<Vec<_>>();
+
         return Ok(outputs);
     }
 
