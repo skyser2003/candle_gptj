@@ -1,3 +1,4 @@
+import json
 from argparse import ArgumentParser
 import time
 
@@ -112,7 +113,11 @@ def main():
 
     model, tokenizer = get_model(model_dir, dtype, device)
 
-    inputs: list[str] = ["Hello who are you?", "What is your name? And your job?"]
+    samples_file = open("../data/test.json", "r")
+    samples = json.load(samples_file)
+    samples_file.close()
+
+    inputs: list[str] = samples["inputs"]
     start_time = time.time()
     
     # outputs = test_single(model, tokenizer, inputs)

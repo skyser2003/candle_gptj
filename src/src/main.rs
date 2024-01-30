@@ -1,6 +1,8 @@
 mod component;
 mod test;
 
+use std::fs::File;
+
 use anyhow::anyhow;
 use clap::Parser;
 
@@ -8,6 +10,7 @@ use candle_core::backend::BackendDevice;
 
 use component::model_candle;
 use component::model_tch;
+use serde::Deserialize;
 use tokio::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -26,6 +29,11 @@ struct Arguments {
 
     #[arg(short, long)]
     framework: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SampleInputs {
+    inputs: Vec<String>,
 }
 
 enum FrameWorkType {
@@ -97,7 +105,14 @@ async fn main() -> anyhow::Result<()> {
         FrameWorkType::Torch
     };
 
-    let inputs = ["Hello who are you?", "What is your name? And your job?"];
+    let samples: SampleInputs =
+        serde_json::from_reader(File::open("../data/test.json").unwrap()).unwrap();
+
+    let inputs = samples
+        .inputs
+        .iter()
+        .map(|input| input.as_str())
+        .collect::<Vec<_>>();
 
     let (outputs, elapsed) = match framework {
         FrameWorkType::Candle => {

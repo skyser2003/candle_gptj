@@ -2,3 +2,4 @@ src/target/
 .vscode/
 *.safetensors
 model/
+data/test.json
