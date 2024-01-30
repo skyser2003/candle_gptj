@@ -412,9 +412,6 @@ impl ModelLoader {
         let mut all_gen_tokens = vec![vec![]; inputs.len()];
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
 
-        let mut attention_mask =
-            Self::get_attention_mask(pad_token_id, &input_tokens_batch, self.model.device);
-
         let max_gen_tokens = config.max_tokens.unwrap() as i64 - input_ids.size()[1];
         let max_gen_tokens = max_gen_tokens.max(1);
 
