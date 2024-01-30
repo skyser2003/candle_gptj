@@ -520,7 +520,7 @@ impl ModelLoader {
                 continue;
             }
 
-            unfinished_texts.iter().rev().for_each(|&index| {
+            finished_texts.iter().rev().for_each(|&index| {
                 original_indices.remove(index as usize);
                 all_input_lengths.remove(index as usize);
             });
