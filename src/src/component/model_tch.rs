@@ -411,8 +411,18 @@ impl ModelLoader {
         let mut all_gen_tokens = vec![vec![]; inputs.len()];
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
 
+        // Generate conditions
         let max_gen_tokens = config.max_tokens.unwrap() as i64 - input_ids.size()[1];
         let max_gen_tokens = max_gen_tokens.max(1);
+
+        let top_p_warper = TopPLogitsWarper {
+            p: config.top_p.unwrap(),
+            min_tokens: 1,
+        };
+
+        let top_k_warper = TopKLogitsWarper {
+            k: config.top_k.unwrap(),
+        };
 
         for _ in 0..max_gen_tokens {
             let (opt_past_key_values, past_length) = if let Some(past_key_values) = &past_key_values
@@ -457,15 +467,6 @@ impl ModelLoader {
 
             // Post processing
             let is_greedy = false;
-
-            let top_p_warper = TopPLogitsWarper {
-                p: config.top_p.unwrap(),
-                min_tokens: 1,
-            };
-
-            let top_k_warper = TopKLogitsWarper {
-                k: config.top_k.unwrap(),
-            };
 
             let gen_ids = if is_greedy {
                 logits.argmax(-1, false)
