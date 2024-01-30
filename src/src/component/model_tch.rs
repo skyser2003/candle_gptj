@@ -80,6 +80,10 @@ trait LogitsWarper {
     fn process(&self, input_ids: &Tensor, base_logits: &Tensor) -> Tensor;
 }
 
+trait EndCriterion {
+    fn is_done(&self, last_token: i64, input_length: i64) -> bool;
+}
+
 struct TopKLogitsWarper {
     k: i64,
 }
@@ -87,6 +91,14 @@ struct TopKLogitsWarper {
 struct TopPLogitsWarper {
     p: f64,
     min_tokens: i64,
+}
+
+struct MaxLengthEndCriterion {
+    max_length: i64,
+}
+
+struct EosTokenEndCriterion {
+    eos_token_id: i64,
 }
 
 pub struct GenerationConfig {
@@ -117,6 +129,18 @@ impl LogitsWarper for TopPLogitsWarper {
         let remove_indices = top_p_below.scatter(1, &sorted_indices, &top_p_below);
 
         base_logits.masked_fill(&remove_indices, -f64::INFINITY)
+    }
+}
+
+impl EndCriterion for MaxLengthEndCriterion {
+    fn is_done(&self, _: i64, input_length: i64) -> bool {
+        input_length >= self.max_length
+    }
+}
+
+impl EndCriterion for EosTokenEndCriterion {
+    fn is_done(&self, last_token: i64, _: i64) -> bool {
+        i64::try_from(last_token).unwrap() == self.eos_token_id
     }
 }
 
@@ -424,6 +448,17 @@ impl ModelLoader {
             k: config.top_k.unwrap(),
         };
 
+        let length_end_criterion = MaxLengthEndCriterion {
+            max_length: config.max_tokens.unwrap() as i64,
+        };
+
+        let eos_end_criterion = EosTokenEndCriterion {
+            eos_token_id: self.model.config.eos_token_id as i64,
+        };
+
+        // EndCriterion trait vector
+        let end_criterons: Vec<&dyn EndCriterion> = vec![&length_end_criterion, &eos_end_criterion];
+
         for _ in 0..max_gen_tokens {
             let (opt_past_key_values, past_length) = if let Some(past_key_values) = &past_key_values
             {
@@ -507,9 +542,13 @@ impl ModelLoader {
                 .zip(&gen_tokens)
                 .enumerate()
                 .for_each(|(index, (&input_length, gen_token))| {
-                    if config.max_tokens.unwrap() as i64 <= input_length
-                        || gen_token[0] == self.get_config().eos_token_id as i64
-                    {
+                    let last_token = gen_token[0];
+
+                    let is_end = end_criterons
+                        .iter()
+                        .any(|end_criterion| end_criterion.is_done(last_token, input_length));
+
+                    if is_end {
                         finished_texts.push(index as i64);
                     } else {
                         unfinished_texts.push(index as i64);
