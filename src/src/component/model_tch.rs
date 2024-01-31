@@ -456,7 +456,8 @@ impl ModelLoader {
             eos_token_id: self.model.config.eos_token_id as i64,
         };
 
-        // EndCriterion trait vector
+        // Warpers, EndCriterion trait vector
+        let warpers: Vec<&dyn LogitsWarper> = vec![&top_k_warper, &top_p_warper];
         let end_criteria: Vec<&dyn EndCriterion> = vec![&length_end_criterion, &eos_end_criterion];
 
         for _ in 0..max_gen_tokens {
@@ -511,8 +512,9 @@ impl ModelLoader {
 
                 let base_logits = logits.reshape([-1, vocab_size]);
 
-                let base_logits = top_p_warper.process(&input_ids, &base_logits);
-                let base_logits = top_k_warper.process(&input_ids, &base_logits);
+                let base_logits = warpers.iter().fold(base_logits, |base_logits, warper| {
+                    warper.process(&input_ids, &base_logits)
+                });
 
                 base_logits
                     .softmax(-1, Kind::Float)
