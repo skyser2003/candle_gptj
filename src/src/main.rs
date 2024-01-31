@@ -139,7 +139,6 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    println!("Inputs: {:?}", inputs);
     println!("Outputs: {:?}, length: {}", outputs, outputs.len());
     println!("Total single token time: {}", elapsed.as_secs_f32());
 

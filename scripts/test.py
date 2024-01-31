@@ -185,7 +185,6 @@ def main():
 
         end_time = time.time()
 
-    print("Inputs: ", json.dumps(inputs, ensure_ascii=False))
     print("Outputs: ", json.dumps(outputs, ensure_ascii=False))
     print(f"Total single token time: {end_time - start_time}s")
 
