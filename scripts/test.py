@@ -1,3 +1,4 @@
+import os
 import json
 from argparse import ArgumentParser
 import time
@@ -12,6 +13,7 @@ from transformers import (
 )
 import torch
 import tqdm
+import vllm
 
 
 dtype_map = {
@@ -65,6 +67,21 @@ def get_model(model_dir: str, dtype: str, device: str):
 
     return model, tokenizer
 
+def get_vllm_model(model_dir: str, dtype: str):
+    print("Begin loading model...")
+    start_time = time.time()
+
+    llm = vllm.LLM(model_dir, dtype=dtype)
+
+    llm.generate("Hot loading", vllm.SamplingParams(n=2))
+
+    end_time = time.time()
+
+    print(f"Loading model done, dtype={llm.llm_engine.model_config.dtype}, {end_time - start_time}s")
+    print()
+
+    return llm
+
 
 def test_single(
     model: GPTJForCausalLM, tokenizer: PreTrainedTokenizer, inputs: list[str]
@@ -104,6 +121,23 @@ def test_generate(
 
     return outputs
 
+def test_vllm_generate(
+    model: vllm.LLM, inputs: list[str]
+):
+    params = vllm.SamplingParams(
+        n=1,
+        top_k=1,
+        top_p=1,
+        max_tokens=50
+    )
+
+    with torch.no_grad():
+        output_tokens = model.generate(inputs, params)
+
+    outputs = [output.outputs[0].text for output in output_tokens]
+
+    return outputs
+
 
 def main():
     parser = ArgumentParser()
@@ -122,19 +156,34 @@ def main():
     print(f"Using device '{device}'")
     print()
 
-    model, tokenizer = get_model(model_dir, dtype, device)
-
     samples_file = open("../data/test.json", "r")
     samples = json.load(samples_file)
     samples_file.close()
 
     inputs: list[str] = samples["inputs"]
-    start_time = time.time()
-    
-    # outputs = test_single(model, tokenizer, inputs)
-    outputs = test_generate(model, tokenizer, inputs)
 
-    end_time = time.time()
+    mode = 1
+
+    if mode == 0:
+        model, tokenizer = get_model(model_dir, dtype, device)
+        start_time = time.time()
+        
+        # outputs = test_single(model, tokenizer, inputs)
+        outputs = test_generate(model, tokenizer, inputs)
+
+        end_time = time.time()
+    else:
+        device_split = device.split(":")
+
+        if len(device_split) == 2 and device_split[0] == "cuda":
+            os.environ["CUDA_VISIBLE_DEVICES"] = device_split[1]
+
+        model = get_vllm_model(model_dir, dtype)
+        start_time = time.time()
+        
+        outputs = test_vllm_generate(model, inputs)
+
+        end_time = time.time()
 
     print("Inputs: ", json.dumps(inputs, ensure_ascii=False))
     print("Outputs: ", json.dumps(outputs, ensure_ascii=False))
