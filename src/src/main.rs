@@ -1,4 +1,5 @@
 mod component;
+mod server;
 mod test;
 
 use std::fs::File;
@@ -8,10 +9,12 @@ use clap::Parser;
 
 use candle_core::backend::BackendDevice;
 
-use component::model_candle;
-use component::model_tch;
 use serde::Deserialize;
 use tokio::time::Instant;
+
+use component::model_candle;
+use component::model_tch;
+use server::rest;
 
 #[derive(Parser, Debug)]
 struct Arguments {
@@ -29,6 +32,12 @@ struct Arguments {
 
     #[arg(short, long)]
     framework: Option<String>,
+
+    #[arg(short, long)]
+    server: Option<bool>,
+
+    #[arg(short, long)]
+    port: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +83,8 @@ async fn main() -> anyhow::Result<()> {
     let dtype_str = args.dtype.clone();
     let device_str = args.device.clone();
     let framework = args.framework.clone();
+    let is_server = args.server.unwrap_or(false);
+    let port = args.port.unwrap_or(8080);
 
     let device_result = || -> anyhow::Result<DeviceType> {
         let device_str = device_str.unwrap_or("cpu".to_string());
@@ -114,33 +125,43 @@ async fn main() -> anyhow::Result<()> {
         .map(|input| input.as_str())
         .collect::<Vec<_>>();
 
-    let (outputs, elapsed) = match framework {
-        FrameWorkType::Candle => {
-            let device = get_candle_device(device_type);
-            let mut loader =
-                model_candle::ModelLoader::new(&model_dir, &tokenizer_dir, dtype_str, &device);
+    if is_server {
+        let server = rest::Server::new(port);
+        server.serve().await;
+    } else {
+        let (outputs, elapsed) = match framework {
+            FrameWorkType::Candle => {
+                let device = get_candle_device(device_type);
+                let mut loader =
+                    model_candle::ModelLoader::new(&model_dir, &tokenizer_dir, dtype_str, &device);
 
-            let start_time = Instant::now();
-            let outputs = loader.inference(&inputs)?;
-            let end_time = Instant::now();
+                let start_time = Instant::now();
+                let outputs = loader.inference(&inputs)?;
+                let end_time = Instant::now();
 
-            (outputs, end_time - start_time)
-        }
-        FrameWorkType::Torch => {
-            let device = get_tch_device(device_type);
-            let mut loader =
-                model_tch::ModelLoader::new(&model_dir, &tokenizer_dir, false, dtype_str, &device);
+                (outputs, end_time - start_time)
+            }
+            FrameWorkType::Torch => {
+                let device = get_tch_device(device_type);
+                let mut loader = model_tch::ModelLoader::new(
+                    &model_dir,
+                    &tokenizer_dir,
+                    false,
+                    dtype_str,
+                    &device,
+                );
 
-            let start_time = Instant::now();
-            let outputs = loader.inference(&inputs, None)?;
-            let end_time = Instant::now();
+                let start_time = Instant::now();
+                let outputs = loader.inference(&inputs, None)?;
+                let end_time = Instant::now();
 
-            (outputs, end_time - start_time)
-        }
-    };
+                (outputs, end_time - start_time)
+            }
+        };
 
-    println!("Outputs: {:?}, length: {}", outputs, outputs.len());
-    println!("Total single token time: {}", elapsed.as_secs_f32());
+        println!("Outputs: {:?}, length: {}", outputs, outputs.len());
+        println!("Total single token time: {}", elapsed.as_secs_f32());
+    }
 
     Ok(())
 }

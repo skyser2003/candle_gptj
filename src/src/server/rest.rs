@@ -67,58 +67,63 @@ enum TritonOutputType {
     FP32(f64),
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let batch_size_str = std::env::var("BATCH_SIZE");
-
-    let batch_size = match batch_size_str {
-        Ok(batch_size_str) => batch_size_str.parse().unwrap_or(512) as usize,
-        Err(_) => 512,
-    };
-
-    println!("Batch size: {}", batch_size);
-
-    // TODO initialize model
-
-    let langs = ["ko"];
-    let langs = langs.map(|lang| lang.to_string());
-
-    let (tx, mut rx) = mpsc::channel::<(String, MessageQueue)>(batch_size * 5);
-    let mut storage = MessageStorage::new(&langs);
-
-    tokio::spawn(async move {
-        loop {
-            let recv = rx.recv().await;
-
-            if let Some((lang, mq)) = recv {
-                storage.save(&lang, mq);
-
-                while let Ok((more_lang, more_mq)) = rx.try_recv() {
-                    storage.save(&more_lang, more_mq);
-
-                    if batch_size <= storage.len() {
-                        break;
-                    }
-                }
-            }
-
-            storage.process().await;
-
-            sleep(Duration::from_nanos(1)).await;
-        }
-    });
-
-    let app = Router::new()
-        .route("/infer/:lang", post(spam_filter))
-        .layer(Extension(tx));
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    let result = axum::serve(listener, app);
-
-    println!("{:?}", result);
-    Ok(())
+pub struct Server {
+    router: Router,
 }
 
+impl Server {
+    pub fn new(port: i32) -> Self {
+        let batch_size_str = std::env::var("BATCH_SIZE");
+
+        let batch_size = match batch_size_str {
+            Ok(batch_size_str) => batch_size_str.parse().unwrap_or(512) as usize,
+            Err(_) => 512,
+        };
+
+        println!("Batch size: {}", batch_size);
+
+        // TODO initialize model
+
+        let langs = ["ko"];
+        let langs = langs.map(|lang| lang.to_string());
+
+        let (tx, mut rx) = mpsc::channel::<(String, MessageQueue)>(batch_size * 5);
+        let mut storage = MessageStorage::new(&langs);
+
+        tokio::spawn(async move {
+            loop {
+                let recv = rx.recv().await;
+
+                if let Some((lang, mq)) = recv {
+                    storage.save(&lang, mq);
+
+                    while let Ok((more_lang, more_mq)) = rx.try_recv() {
+                        storage.save(&more_lang, more_mq);
+
+                        if batch_size <= storage.len() {
+                            break;
+                        }
+                    }
+                }
+
+                storage.process().await;
+
+                sleep(Duration::from_nanos(1)).await;
+            }
+        });
+
+        let router = Router::new()
+            .route("/infer/:lang", post(spam_filter))
+            .layer(Extension(tx));
+
+        Self { router }
+    }
+
+    pub async fn serve(&self) {
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+        axum::serve(listener, self.router.clone()).await.unwrap();
+    }
+}
 pub struct MessageStorage {
     langs: Vec<String>,
     all_messages: HashMap<String, Vec<MessageQueue>>,
