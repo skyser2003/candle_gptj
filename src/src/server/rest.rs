@@ -4,6 +4,7 @@ use std::time::SystemTime;
 use axum::extract::Path;
 use axum::http::StatusCode;
 use itertools::izip;
+use tch::Device;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
@@ -14,28 +15,31 @@ use axum::{routing::post, Router};
 use axum_macros;
 use serde::{Deserialize, Serialize};
 
+use crate::component::model_tch;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TritonRequest {
-    pub inputs: Vec<TritonRequestInput>,
-    pub outputs: Option<Vec<TritonRequestOutput>>,
+pub struct GenerateRequest {
+    pub texts: Vec<String>,
+    pub top_p: f64,
+    pub top_k: i64,
+    pub temperature: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
-enum TritonResponse {
-    Ok(TritonOkResult),
-    Fail(TritonFailResult),
+enum GenerateResponse {
+    Ok(GenerateOkResult),
+    Fail(GenerateFailResult),
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TritonOkResult {
-    pub model_name: String,
-    pub model_version: String,
-    pub outputs: Vec<TritonResultOutput>,
+pub struct GenerateOkResult {
+    pub texts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TritonFailResult {
+pub struct GenerateFailResult {
+    pub texts: Vec<String>,
     pub message: String,
 }
 
@@ -89,7 +93,7 @@ impl Server {
         let langs = langs.map(|lang| lang.to_string());
 
         let (tx, mut rx) = mpsc::channel::<(String, MessageQueue)>(batch_size * 5);
-        let mut storage = MessageStorage::new(&langs);
+        let mut storage = MessageStorage::new("model_dir", "tokenizer_dir", "dtype", Device::Cpu); // TODO
 
         tokio::spawn(async move {
             loop {
@@ -127,29 +131,45 @@ impl Server {
     }
 }
 pub struct MessageStorage {
-    langs: Vec<String>,
-    all_messages: HashMap<String, Vec<MessageQueue>>,
+    model: model_tch::ModelLoader,
     message_count: usize,
+    all_messages: Vec<MessageQueue>,
     begin_time: SystemTime,
 }
 
 #[derive(Debug)]
+pub struct InferRequest {
+    pub text: String,
+    pub top_p: f64,
+    pub top_k: i64,
+    pub temperature: f64,
+}
+
+#[derive(Debug)]
+pub struct InferResponse {
+    pub text: String,
+}
+
+#[derive(Debug)]
 pub struct MessageQueue {
-    messages: Vec<String>,
-    tx: oneshot::Sender<Vec<(String, f64)>>,
+    messages: Vec<InferRequest>,
+    tx: oneshot::Sender<Vec<InferResponse>>,
 }
 
 impl MessageStorage {
-    fn new(langs: &[String]) -> Self {
-        let all_messages = langs
-            .iter()
-            .map(|lang| (lang.clone(), Vec::new()))
-            .collect::<HashMap<_, _>>();
+    fn new(model_dir: &str, tokenizer_dir: &str, dtype: &str, device: Device) -> Self {
+        let model = model_tch::ModelLoader::new(
+            model_dir,
+            tokenizer_dir,
+            false,
+            Some(dtype.to_string()),
+            &device,
+        );
 
         MessageStorage {
-            langs: langs.to_vec(),
+            model,
+            all_messages: vec![],
             message_count: Default::default(),
-            all_messages,
             begin_time: SystemTime::now(),
         }
     }
@@ -159,7 +179,7 @@ impl MessageStorage {
 
         // println!("Messages count: {} {}", messages_count, self.message_count);
 
-        self.all_messages.get_mut(lang).unwrap().push(mq);
+        self.all_messages.push(mq);
     }
 
     fn len(&self) -> usize {
@@ -168,144 +188,106 @@ impl MessageStorage {
 
     fn reset_state(&mut self) {
         self.message_count = 0;
-
-        for messages in self.all_messages.values_mut() {
-            messages.clear();
-        }
+        self.all_messages.clear();
 
         self.begin_time = SystemTime::now();
     }
 
-    fn serialize(all_messages: &Vec<MessageQueue>) -> Vec<String> {
+    fn serialize(mq: &MessageQueue) -> Vec<&InferRequest> {
         let mut outputs = vec![];
 
-        for mq in all_messages {
-            for msg in mq.messages.iter() {
-                outputs.push(msg.clone());
-            }
+        for msg in mq.messages.iter() {
+            outputs.push(msg);
         }
 
         outputs
     }
 
     async fn process(&mut self) {
-        let mut all_messages = HashMap::new();
+        let mut all_messages = vec![];
 
-        for lang in self.langs.iter() {
-            all_messages.insert(
-                lang.clone(),
-                self.all_messages.insert(lang.clone(), Vec::new()).unwrap(),
-            );
-        }
+        all_messages.append(&mut self.all_messages);
 
         self.reset_state();
 
-        let flattened = all_messages
+        let flattened = self
+            .all_messages
             .iter()
-            .map(|(lang, mqs)| (lang.clone(), Self::serialize(mqs)))
-            .collect::<HashMap<_, _>>();
+            .flat_map(|mq| Self::serialize(mq))
+            .collect::<Vec<_>>();
 
-        let all_results = get_spam_result(&flattened).await;
+        let all_results = get_inference_result(&flattened).await;
 
-        for (lang, results) in all_results.into_iter() {
-            let mqs = all_messages.remove(&lang).unwrap();
+        let mut all_results_iter = all_results.into_iter();
 
-            let mut results_iter = results.into_iter();
+        for mq in all_messages {
+            let mut mq_results = vec![];
 
-            for mq in mqs.into_iter() {
-                let mut mq_results = vec![];
+            for _ in 0..mq.messages.len() {
+                let result = all_results_iter.next().unwrap();
+                mq_results.push(result);
+            }
 
-                for _ in 0..mq.messages.len() {
-                    let result = results_iter.next().unwrap();
-                    mq_results.push(result.clone());
-                }
-
-                match mq.tx.send(mq_results) {
-                    Ok(_) => {}
-                    Err(_) => {}
-                }
+            match mq.tx.send(mq_results) {
+                Ok(_) => {}
+                Err(_) => {}
             }
         }
     }
 }
 
-async fn get_spam_result(
-    messages: &HashMap<String, Vec<String>>,
-) -> HashMap<String, Vec<(String, f64)>> {
-    let messages_count = messages.iter().map(|(_, msgs)| msgs.len()).sum::<usize>();
+async fn get_inference_result(messages: &Vec<&InferRequest>) -> Vec<InferResponse> {
+    let messages_count = messages.len();
 
     if messages_count == 0 {
-        return HashMap::new();
+        return Vec::new();
     }
 
     println!("Messages count: {}", messages_count);
 
     let messages = messages.clone();
 
-    let res: HashMap<String, (Vec<String>, Vec<f64>)> = tokio::task::spawn_blocking(move || {
+    let res: Vec<InferResponse> = tokio::task::spawn_blocking(move || {
         // TODO: execute model
-        HashMap::new()
+        Vec::new()
     })
     .await
     .unwrap();
 
-    res.iter()
-        .map(|(lang, (res1, res2))| {
-            (
-                lang.clone(),
-                izip!(res1, res2)
-                    .map(|(val1, val2)| (val1.clone(), *val2))
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect::<HashMap<_, _>>()
+    res
 }
 
 #[axum_macros::debug_handler]
 async fn spam_filter(
     Path(lang): Path<String>,
     Extension(storage_tx): Extension<mpsc::Sender<(String, MessageQueue)>>,
-    Json(payload): Json<TritonRequest>,
-) -> (StatusCode, Json<TritonResponse>) {
-    let messages = &payload.inputs[0].data;
+    Json(payload): Json<GenerateRequest>,
+) -> (StatusCode, Json<GenerateResponse>) {
+    let messages = payload
+        .texts
+        .iter()
+        .map(|text| InferRequest {
+            text: text.clone(),
+            top_p: payload.top_p,
+            top_k: payload.top_k,
+            temperature: payload.temperature,
+        })
+        .collect::<Vec<_>>();
 
     let (tx, rx) = oneshot::channel();
 
-    let mq = MessageQueue {
-        messages: messages.clone(),
-        tx,
-    };
+    let mq = MessageQueue { messages, tx };
 
     match storage_tx.send((lang, mq)).await {
         Ok(_) => {}
         Err(_) => {}
     };
 
-    let py_results = rx.await.unwrap();
+    let llm_results = rx.await.unwrap();
 
-    let mut results = TritonOkResult {
-        model_name: "spam_filter_svm".to_string(),
-        model_version: "1".to_string(),
-        outputs: vec![
-            TritonResultOutput {
-                name: "OUTPUT0".to_string(),
-                datatype: "BYTES".to_string(),
-                shape: vec![py_results.len()],
-                data: vec![],
-            },
-            TritonResultOutput {
-                name: "OUTPUT1".to_string(),
-                datatype: "FP32".to_string(),
-                shape: vec![py_results.len()],
-                data: vec![],
-            },
-        ],
+    let result = GenerateOkResult {
+        texts: llm_results.iter().map(|res| res.text.clone()).collect(),
     };
 
-    for (val1, val2) in py_results {
-        results.outputs[0].data.push(TritonOutputType::BYTES(val1));
-        results.outputs[1].data.push(TritonOutputType::FP32(val2));
-    }
-
-    (StatusCode::OK, Json(TritonResponse::Ok(results)))
+    (StatusCode::OK, Json(GenerateResponse::Ok(result)))
 }
