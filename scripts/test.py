@@ -173,11 +173,6 @@ def main():
 
         end_time = time.time()
     else:
-        device_split = device.split(":")
-
-        if len(device_split) == 2 and device_split[0] == "cuda":
-            os.environ["CUDA_VISIBLE_DEVICES"] = device_split[1]
-
         model = get_vllm_model(model_dir, dtype)
         start_time = time.time()
         
