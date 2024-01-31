@@ -69,6 +69,7 @@ enum TritonOutputType {
 
 pub struct Server {
     router: Router,
+    port: i32,
 }
 
 impl Server {
@@ -116,11 +117,12 @@ impl Server {
             .route("/infer/:lang", post(spam_filter))
             .layer(Extension(tx));
 
-        Self { router }
+        Self { router, port }
     }
 
     pub async fn serve(&self) {
-        let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+        let bind_addr = format!("0.0.0.0:{}", self.port);
+        let listener = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
         axum::serve(listener, self.router.clone()).await.unwrap();
     }
 }
