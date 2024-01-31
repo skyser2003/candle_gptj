@@ -7,11 +7,14 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
+axum = { version = "0.7.4", features = ["http2"] }
+axum-macros = "0.4.1"
 candle-core = { version = "0.3.2", features = ["cuda"] }
 candle-nn = { version = "0.3.2", features = ["cuda"] }
 candle-transformers = { version = "0.3.2", features = ["cuda"] }
 clap = "4.4.11"
 hf-hub = { version = "0.3.2", features = ["tokio"] }
+itertools = "0.12.1"
 memmap2 = "0.9.0"
 safetensors = "0.4.1"
 serde = "1.0.193"
