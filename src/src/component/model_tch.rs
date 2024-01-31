@@ -457,7 +457,7 @@ impl ModelLoader {
         };
 
         // EndCriterion trait vector
-        let end_criterons: Vec<&dyn EndCriterion> = vec![&length_end_criterion, &eos_end_criterion];
+        let end_criteria: Vec<&dyn EndCriterion> = vec![&length_end_criterion, &eos_end_criterion];
 
         for _ in 0..max_gen_tokens {
             let (opt_past_key_values, past_length) = if let Some(past_key_values) = &past_key_values
@@ -544,7 +544,7 @@ impl ModelLoader {
                 .for_each(|(index, (&input_length, gen_token))| {
                     let last_token = gen_token[0];
 
-                    let is_end = end_criterons
+                    let is_end = end_criteria
                         .iter()
                         .any(|end_criterion| end_criterion.is_done(last_token, input_length));
 
