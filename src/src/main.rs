@@ -33,8 +33,8 @@ struct Arguments {
     #[arg(short, long)]
     framework: Option<String>,
 
-    #[arg(short, long)]
-    server: Option<bool>,
+    #[arg(short, long, action, default_value = "false")]
+    server: bool,
 
     #[arg(short, long)]
     port: Option<i32>,
@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let dtype_str = args.dtype.clone();
     let device_str = args.device.clone();
     let framework = args.framework.clone();
-    let is_server = args.server.unwrap_or(false);
+    let is_server = args.server;
     let port = args.port.unwrap_or(8080);
 
     let device_result = || -> anyhow::Result<DeviceType> {
