@@ -122,7 +122,7 @@ pub struct InferRequest {
     pub temperature: Option<f64>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct InferResponse {
     pub text: String,
 }
@@ -218,21 +218,27 @@ impl MessageStorage {
 
         // TODO: spawn blocking unncessary?
         // TODO: gen config
-        let outputs = self
-            .model
-            .inference(
-                &messages
-                    .iter()
-                    .map(|msg| msg.text.as_str())
-                    .collect::<Vec<_>>(),
-                None,
-            )
-            .unwrap();
+        let outputs_res = self.model.inference(
+            &messages
+                .iter()
+                .map(|msg| msg.text.as_str())
+                .collect::<Vec<_>>(),
+            None,
+        );
 
-        let res = outputs
-            .into_iter()
-            .map(|text| InferResponse { text })
-            .collect();
+        let res = if let Ok(outputs) = outputs_res {
+            outputs
+                .into_iter()
+                .map(|text| InferResponse { text })
+                .collect()
+        } else {
+            vec![
+                InferResponse {
+                    text: "".to_string()
+                };
+                messages.len()
+            ]
+        };
 
         res
     }
