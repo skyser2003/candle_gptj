@@ -101,10 +101,12 @@ struct EosTokenEndCriterion {
     eos_token_id: i64,
 }
 
+#[derive(Clone)]
 pub struct GenerationConfig {
-    top_k: Option<i64>,
-    top_p: Option<f64>,
-    max_tokens: Option<i32>,
+    pub top_k: Option<i64>,
+    pub top_p: Option<f64>,
+    pub max_tokens: Option<i32>,
+    pub max_gen_tokens: Option<i32>,
 }
 
 impl LogitsWarper for TopKLogitsWarper {
@@ -239,6 +241,7 @@ impl ModelLoader {
             &["Hot loading"],
             Some(GenerationConfig {
                 max_tokens: Some(5),
+                max_gen_tokens: None,
                 top_k: Some(1),
                 top_p: Some(1.0),
             }),
@@ -382,6 +385,7 @@ impl ModelLoader {
     ) -> Result<Vec<String>> {
         let config = config.unwrap_or(GenerationConfig {
             max_tokens: Some(50),
+            max_gen_tokens: None,
             top_k: Some(1),
             top_p: Some(0.0),
         });
@@ -436,7 +440,14 @@ impl ModelLoader {
         let mut past_key_values: Option<Vec<(Tensor, Tensor)>> = None;
 
         // Generate conditions
-        let max_gen_tokens = config.max_tokens.unwrap() as i64 - input_ids.size()[1];
+        let max_gen_tokens = if let Some(max_gen_tokens) = config.max_gen_tokens {
+            max_gen_tokens as i64
+        } else if let Some(max_tokens) = config.max_tokens {
+            max_tokens as i64 - input_ids.size()[1]
+        } else {
+            panic!("Either 'max_gen_tokens' or 'max_tokens' should exist");
+        };
+
         let max_gen_tokens = max_gen_tokens.max(1);
 
         let top_p_warper = TopPLogitsWarper {
@@ -449,7 +460,7 @@ impl ModelLoader {
         };
 
         let length_end_criterion = MaxLengthEndCriterion {
-            max_length: config.max_tokens.unwrap() as i64,
+            max_length: all_input_lengths[0] + max_gen_tokens,
         };
 
         let eos_end_criterion = EosTokenEndCriterion {

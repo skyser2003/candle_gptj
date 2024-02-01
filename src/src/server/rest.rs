@@ -21,9 +21,11 @@ use crate::component::model_tch::GenerationConfig;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GenerateRequest {
-    pub texts: Vec<String>,
+    pub prompt: String,
+    pub n: Option<i64>,
     pub top_p: Option<f64>,
     pub top_k: Option<i64>,
+    pub max_tokens: Option<i32>,
     pub temperature: Option<f64>,
 }
 
@@ -36,7 +38,7 @@ enum GenerateResponse {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GenerateOkResult {
-    pub texts: Vec<String>,
+    pub text: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,13 +116,7 @@ pub struct MessageStorage {
     begin_time: SystemTime,
 }
 
-#[derive(Debug)]
-pub struct InferRequest {
-    pub text: String,
-    pub top_p: Option<f64>,
-    pub top_k: Option<i64>,
-    pub temperature: Option<f64>,
-}
+pub type InferRequest = GenerateRequest;
 
 #[derive(Clone, Debug)]
 pub struct InferResponse {
@@ -129,7 +125,7 @@ pub struct InferResponse {
 
 #[derive(Debug)]
 pub struct MessageQueue {
-    messages: Vec<InferRequest>,
+    message: InferRequest,
     tx: oneshot::Sender<Vec<InferResponse>>,
 }
 
@@ -146,7 +142,7 @@ impl MessageStorage {
     }
 
     fn save(&mut self, mq: MessageQueue) {
-        self.message_count += mq.messages.len();
+        self.message_count += 1;
 
         // println!("Messages count: {} {}", messages_count, self.message_count);
 
@@ -164,16 +160,6 @@ impl MessageStorage {
         self.begin_time = SystemTime::now();
     }
 
-    fn serialize(mq: &MessageQueue) -> Vec<&InferRequest> {
-        let mut outputs = vec![];
-
-        for msg in mq.messages.iter() {
-            outputs.push(msg);
-        }
-
-        outputs
-    }
-
     async fn process(&mut self) {
         let mut all_messages = vec![];
 
@@ -181,22 +167,21 @@ impl MessageStorage {
 
         self.reset_state();
 
-        let flattened = all_messages
+        let reqs = all_messages
             .iter()
-            .flat_map(|mq| Self::serialize(mq))
+            .map(|mq| &mq.message)
             .collect::<Vec<_>>();
 
-        let all_results = self.get_inference_result(&flattened).await;
+        let all_results = self.get_inference_result(&reqs).await;
 
         let mut all_results_iter = all_results.into_iter();
 
         for mq in all_messages {
+            // TODO: currently sending single message
             let mut mq_results = vec![];
 
-            for _ in 0..mq.messages.len() {
-                let result = all_results_iter.next().unwrap();
-                mq_results.push(result);
-            }
+            let result = all_results_iter.next().unwrap();
+            mq_results.push(result);
 
             match mq.tx.send(mq_results) {
                 Ok(_) => {}
@@ -217,28 +202,38 @@ impl MessageStorage {
         let messages = messages.clone();
 
         // TODO: spawn blocking unncessary?
-        // TODO: gen config
-        let outputs_res = self.model.inference(
-            &messages
-                .iter()
-                .map(|msg| msg.text.as_str())
-                .collect::<Vec<_>>(),
-            None,
-        );
+        let inputs = &messages
+            .iter()
+            .map(|msg| msg.prompt.as_str())
+            .collect::<Vec<_>>();
+        let configs = &messages
+            .iter()
+            .map(|msg| GenerationConfig {
+                top_k: msg.top_k,
+                top_p: msg.top_p,
+                max_tokens: None,
+                max_gen_tokens: msg.max_tokens,
+            })
+            .collect::<Vec<_>>();
 
-        let res = if let Ok(outputs) = outputs_res {
-            outputs
-                .into_iter()
-                .map(|text| InferResponse { text })
-                .collect()
-        } else {
-            vec![
-                InferResponse {
-                    text: "".to_string()
+        let output_res = inputs
+            .iter()
+            .zip(configs)
+            .map(|(input, config)| self.model.inference(&[input], Some(config.clone())))
+            .collect::<Vec<_>>();
+
+        let res = output_res
+            .into_iter()
+            .map(|res| {
+                let text = if let Ok(mut output) = res {
+                    output.pop().unwrap()
+                } else {
+                    "".to_string()
                 };
-                messages.len()
-            ]
-        };
+
+                InferResponse { text }
+            })
+            .collect::<Vec<_>>();
 
         res
     }
@@ -249,20 +244,12 @@ async fn generate(
     Extension(storage_tx): Extension<mpsc::Sender<MessageQueue>>,
     Json(payload): Json<GenerateRequest>,
 ) -> (StatusCode, Json<GenerateResponse>) {
-    let messages = payload
-        .texts
-        .iter()
-        .map(|text| InferRequest {
-            text: text.clone(),
-            top_p: payload.top_p,
-            top_k: payload.top_k,
-            temperature: payload.temperature,
-        })
-        .collect::<Vec<_>>();
-
     let (tx, rx) = oneshot::channel();
 
-    let mq = MessageQueue { messages, tx };
+    let mq = MessageQueue {
+        message: payload,
+        tx,
+    };
 
     match storage_tx.send(mq).await {
         Ok(_) => {}
@@ -272,7 +259,7 @@ async fn generate(
     let llm_results = rx.await.unwrap();
 
     let result = GenerateOkResult {
-        texts: llm_results.iter().map(|res| res.text.clone()).collect(),
+        text: llm_results.iter().map(|res| res.text.clone()).collect(),
     };
 
     (StatusCode::OK, Json(GenerateResponse::Ok(result)))
