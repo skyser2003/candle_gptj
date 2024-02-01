@@ -65,7 +65,7 @@ impl Server {
             Err(_) => 512,
         };
 
-        println!("Batch size: {}, port: http://0.0.0.0:{}", batch_size, port);
+        println!("Batch size: {}", batch_size);
 
         let (tx, mut rx) = mpsc::channel::<MessageQueue>(batch_size * 5);
         let mut storage = MessageStorage::new(model_dir, tokenizer_dir, dtype, device);
@@ -101,6 +101,8 @@ impl Server {
 
     pub async fn serve(&self) {
         let bind_addr = format!("0.0.0.0:{}", self.port);
+        println!("Start server at http://{}", bind_addr);
+
         let listener = tokio::net::TcpListener::bind(bind_addr).await.unwrap();
         axum::serve(listener, self.router.clone()).await.unwrap();
     }
