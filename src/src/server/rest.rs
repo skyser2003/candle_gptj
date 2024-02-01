@@ -17,6 +17,7 @@ use axum_macros;
 use serde::{Deserialize, Serialize};
 
 use crate::component::model_tch;
+use crate::component::model_tch::GenerationConfig;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GenerateRequest {
@@ -178,13 +179,12 @@ impl MessageStorage {
 
         self.reset_state();
 
-        let flattened = self
-            .all_messages
+        let flattened = all_messages
             .iter()
             .flat_map(|mq| Self::serialize(mq))
             .collect::<Vec<_>>();
 
-        let all_results = get_inference_result(&flattened).await;
+        let all_results = self.get_inference_result(&flattened).await;
 
         let mut all_results_iter = all_results.into_iter();
 
@@ -202,27 +202,38 @@ impl MessageStorage {
             }
         }
     }
-}
 
-async fn get_inference_result(messages: &Vec<&InferRequest>) -> Vec<InferResponse> {
-    let messages_count = messages.len();
+    async fn get_inference_result(&mut self, messages: &Vec<&InferRequest>) -> Vec<InferResponse> {
+        let messages_count = messages.len();
 
-    if messages_count == 0 {
-        return Vec::new();
+        if messages_count == 0 {
+            return Vec::new();
+        }
+
+        println!("Messages count: {}", messages_count);
+
+        let messages = messages.clone();
+
+        // TODO: spawn blocking unncessary?
+        // TODO: gen config
+        let outputs = self
+            .model
+            .inference(
+                &messages
+                    .iter()
+                    .map(|msg| msg.text.as_str())
+                    .collect::<Vec<_>>(),
+                None,
+            )
+            .unwrap();
+
+        let res = outputs
+            .into_iter()
+            .map(|text| InferResponse { text })
+            .collect();
+
+        res
     }
-
-    println!("Messages count: {}", messages_count);
-
-    let messages = messages.clone();
-
-    let res: Vec<InferResponse> = tokio::task::spawn_blocking(move || {
-        // TODO: execute model
-        Vec::new()
-    })
-    .await
-    .unwrap();
-
-    res
 }
 
 #[axum_macros::debug_handler]
