@@ -126,7 +126,8 @@ async fn main() -> anyhow::Result<()> {
         .collect::<Vec<_>>();
 
     if is_server {
-        let server = rest::Server::new(port);
+        let device = get_tch_device(device_type);
+        let server = rest::Server::new(port, &model_dir, &tokenizer_dir, dtype_str, device);
         server.serve().await;
     } else {
         let (outputs, elapsed) = match framework {

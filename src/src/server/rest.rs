@@ -3,6 +3,7 @@ use std::time::SystemTime;
 
 use axum::extract::Path;
 use axum::http::StatusCode;
+use clap::builder::Str;
 use itertools::izip;
 use tch::Device;
 use tokio::sync::mpsc;
@@ -20,9 +21,9 @@ use crate::component::model_tch;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GenerateRequest {
     pub texts: Vec<String>,
-    pub top_p: f64,
-    pub top_k: i64,
-    pub temperature: f64,
+    pub top_p: Option<f64>,
+    pub top_k: Option<i64>,
+    pub temperature: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,41 +44,19 @@ pub struct GenerateFailResult {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TritonRequestInput {
-    pub name: String,
-    pub shape: Vec<i32>,
-    pub datatype: String,
-    pub data: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TritonRequestOutput {
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TritonResultOutput {
-    name: String,
-    datatype: String,
-    shape: Vec<usize>,
-    data: Vec<TritonOutputType>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-enum TritonOutputType {
-    BYTES(String),
-    FP32(f64),
-}
-
 pub struct Server {
     router: Router,
     port: i32,
 }
 
 impl Server {
-    pub fn new(port: i32) -> Self {
+    pub fn new(
+        port: i32,
+        model_dir: &str,
+        tokenizer_dir: &str,
+        dtype: Option<String>,
+        device: Device,
+    ) -> Self {
         let batch_size_str = std::env::var("BATCH_SIZE");
 
         let batch_size = match batch_size_str {
@@ -85,25 +64,20 @@ impl Server {
             Err(_) => 512,
         };
 
-        println!("Batch size: {}", batch_size);
+        println!("Batch size: {}, port: http://0.0.0.0:{}", batch_size, port);
 
-        // TODO initialize model
-
-        let langs = ["ko"];
-        let langs = langs.map(|lang| lang.to_string());
-
-        let (tx, mut rx) = mpsc::channel::<(String, MessageQueue)>(batch_size * 5);
-        let mut storage = MessageStorage::new("model_dir", "tokenizer_dir", "dtype", Device::Cpu); // TODO
+        let (tx, mut rx) = mpsc::channel::<MessageQueue>(batch_size * 5);
+        let mut storage = MessageStorage::new(model_dir, tokenizer_dir, dtype, device);
 
         tokio::spawn(async move {
             loop {
                 let recv = rx.recv().await;
 
-                if let Some((lang, mq)) = recv {
-                    storage.save(&lang, mq);
+                if let Some(mq) = recv {
+                    storage.save(mq);
 
-                    while let Ok((more_lang, more_mq)) = rx.try_recv() {
-                        storage.save(&more_lang, more_mq);
+                    while let Ok(more_mq) = rx.try_recv() {
+                        storage.save(more_mq);
 
                         if batch_size <= storage.len() {
                             break;
@@ -118,7 +92,7 @@ impl Server {
         });
 
         let router = Router::new()
-            .route("/infer/:lang", post(spam_filter))
+            .route("/generate", post(generate))
             .layer(Extension(tx));
 
         Self { router, port }
@@ -140,9 +114,9 @@ pub struct MessageStorage {
 #[derive(Debug)]
 pub struct InferRequest {
     pub text: String,
-    pub top_p: f64,
-    pub top_k: i64,
-    pub temperature: f64,
+    pub top_p: Option<f64>,
+    pub top_k: Option<i64>,
+    pub temperature: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -157,14 +131,8 @@ pub struct MessageQueue {
 }
 
 impl MessageStorage {
-    fn new(model_dir: &str, tokenizer_dir: &str, dtype: &str, device: Device) -> Self {
-        let model = model_tch::ModelLoader::new(
-            model_dir,
-            tokenizer_dir,
-            false,
-            Some(dtype.to_string()),
-            &device,
-        );
+    fn new(model_dir: &str, tokenizer_dir: &str, dtype: Option<String>, device: Device) -> Self {
+        let model = model_tch::ModelLoader::new(model_dir, tokenizer_dir, false, dtype, &device);
 
         MessageStorage {
             model,
@@ -174,7 +142,7 @@ impl MessageStorage {
         }
     }
 
-    fn save(&mut self, lang: &String, mq: MessageQueue) {
+    fn save(&mut self, mq: MessageQueue) {
         self.message_count += mq.messages.len();
 
         // println!("Messages count: {} {}", messages_count, self.message_count);
@@ -258,9 +226,8 @@ async fn get_inference_result(messages: &Vec<&InferRequest>) -> Vec<InferRespons
 }
 
 #[axum_macros::debug_handler]
-async fn spam_filter(
-    Path(lang): Path<String>,
-    Extension(storage_tx): Extension<mpsc::Sender<(String, MessageQueue)>>,
+async fn generate(
+    Extension(storage_tx): Extension<mpsc::Sender<MessageQueue>>,
     Json(payload): Json<GenerateRequest>,
 ) -> (StatusCode, Json<GenerateResponse>) {
     let messages = payload
@@ -278,7 +245,7 @@ async fn spam_filter(
 
     let mq = MessageQueue { messages, tx };
 
-    match storage_tx.send((lang, mq)).await {
+    match storage_tx.send(mq).await {
         Ok(_) => {}
         Err(_) => {}
     };
