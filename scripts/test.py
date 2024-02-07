@@ -73,7 +73,7 @@ def get_vllm_model(model_dir: str, dtype: str):
 
     llm = vllm.LLM(model_dir, dtype=dtype, enforce_eager=False)
 
-    llm.generate("Hot loading", vllm.SamplingParams(n=2))
+    llm.generate("Hot loading", vllm.SamplingParams(max_tokens=5))
 
     end_time = time.time()
 
