@@ -71,7 +71,7 @@ def get_vllm_model(model_dir: str, dtype: str):
     print("Begin loading model...")
     start_time = time.time()
 
-    llm = vllm.LLM(model_dir, dtype=dtype, enforce_eager=False)
+    llm = vllm.LLM(model_dir, dtype=dtype, enforce_eager=True)
 
     llm.generate("Hot loading", vllm.SamplingParams(max_tokens=5))
 
