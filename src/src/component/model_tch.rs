@@ -230,7 +230,7 @@ impl ModelLoader {
             lm_head,
         };
 
-        let mut instance = Self {
+        let instance = Self {
             model,
             tokenizer,
             pad_token_id,
