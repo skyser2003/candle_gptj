@@ -133,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
         let (outputs, elapsed) = match framework {
             FrameWorkType::Candle => {
                 let device = get_candle_device(device_type);
-                let mut loader =
+                let loader =
                     model_candle::ModelLoader::new(&model_dir, &tokenizer_dir, dtype_str, &device);
 
                 let start_time = Instant::now();
@@ -144,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
             }
             FrameWorkType::Torch => {
                 let device = get_tch_device(device_type);
-                let mut loader = model_tch::ModelLoader::new(
+                let loader = model_tch::ModelLoader::new(
                     &model_dir,
                     &tokenizer_dir,
                     false,
