@@ -347,7 +347,7 @@ impl ModelLoader {
     }
 
     pub fn forward(
-        &mut self,
+        &self,
         input_ids: Option<&Tensor>,
         input_embeds: Option<Tensor>,
         position_ids: Option<Tensor>,
@@ -379,13 +379,13 @@ impl ModelLoader {
     }
 
     pub fn inference(
-        &mut self,
+        &self,
         inputs: &[&str],
         config: Option<GenerationConfig>,
     ) -> Result<Vec<String>> {
         let config = config.unwrap_or(GenerationConfig {
-            max_tokens: Some(50),
-            max_gen_tokens: None,
+            max_tokens: None,
+            max_gen_tokens: Some(50),
             top_k: Some(1),
             top_p: Some(0.0),
         });
@@ -543,6 +543,8 @@ impl ModelLoader {
             }
 
             // Remove end criteria texts
+            continue;
+
             all_input_lengths
                 .iter_mut()
                 .for_each(|input_length| *input_length += 1);
@@ -721,7 +723,7 @@ impl CoreModel {
     }
 
     fn forward(
-        &mut self,
+        &self,
         input_ids: Option<&Tensor>,
         past_key_values: Option<Vec<(&Tensor, &Tensor)>>,
         attention_mask: Option<Tensor>,
@@ -840,7 +842,7 @@ impl CoreModel {
         let mut all_hidden_states = Vec::new();
 
         for i in 0..self.hidden_layers.len() {
-            let layer = &mut self.hidden_layers[i];
+            let layer = &self.hidden_layers[i];
             let layer_past = past_key_values[i];
 
             if self.is_parallel {
@@ -1006,7 +1008,7 @@ impl HiddenLayer {
     }
 
     fn forward(
-        &mut self,
+        &self,
         hidden_states: &Tensor,
         position_ids: &Tensor,
         layer_past: Option<(&Tensor, &Tensor)>,
@@ -1143,7 +1145,7 @@ impl Attention {
     }
 
     fn forward(
-        &mut self,
+        &self,
         hidden_states: &Tensor,
         position_ids: &Tensor,
         layer_past: Option<(&Tensor, &Tensor)>,
@@ -1344,12 +1346,14 @@ impl Attention {
         }
     }
 
-    fn get_embed_positions(&mut self, input: &Tensor) -> Tensor {
-        if self.embed_positions.device().ne(&input.device()) {
-            self.embed_positions = self.embed_positions.to_device(input.device());
+    fn get_embed_positions(&self, input: &Tensor) -> Tensor {
+        if self.embed_positions.device().eq(&input.device()) {
+            self.embed_positions.repeat([input.size()[0], 1, 1])
+        } else {
+            self.embed_positions
+                .to_device(input.device())
+                .repeat([input.size()[0], 1, 1])
         }
-
-        self.embed_positions.repeat([input.size()[0], 1, 1])
     }
 
     fn apply_rotary_pos_emb(tensor: &Tensor, sin: &Tensor, cos: &Tensor) -> Tensor {
