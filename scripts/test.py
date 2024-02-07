@@ -180,7 +180,13 @@ def main():
 
         end_time = time.time()
 
-    print("Outputs: ", json.dumps(outputs, ensure_ascii=False))
+    print("Outputs: ")
+
+    for i, (inp, output) in enumerate(zip(inputs, outputs)):
+        print(f"{i}: ", json.dumps(inp + output, ensure_ascii=False))
+
+    print()
+
     print(f"Total single token time: {end_time - start_time}s")
 
 

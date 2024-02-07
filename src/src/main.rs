@@ -160,7 +160,12 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        println!("Outputs: {:?}, length: {}", outputs, outputs.len());
+        println!("Outputs: ");
+
+        for (i, output) in outputs.iter().enumerate() {
+            println!("{}: {:?}", i, output);
+        }
+
         println!("Total single token time: {}", elapsed.as_secs_f32());
     }
 
