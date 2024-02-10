@@ -39,7 +39,12 @@ fn bench(c: &mut Criterion) {
         }
         println!("");
 
-        let mut loader = ModelLoader::new(&model_dir, &tokenizer_dir, &device);
+        let mut loader = ModelLoader::new(
+            &model_dir,
+            &tokenizer_dir,
+            Some("float16".to_string()),
+            &device,
+        );
         let inputs = ["Hello who are you?", "What is your name?"];
 
         b.iter(|| {
