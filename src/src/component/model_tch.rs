@@ -543,8 +543,6 @@ impl ModelLoader {
             }
 
             // Remove end criteria texts
-            continue;
-
             all_input_lengths
                 .iter_mut()
                 .for_each(|input_length| *input_length += 1);
