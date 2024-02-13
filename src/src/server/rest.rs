@@ -63,8 +63,8 @@ impl Server {
         let batch_size_str = std::env::var("BATCH_SIZE");
 
         let batch_size = match batch_size_str {
-            Ok(batch_size_str) => batch_size_str.parse().unwrap_or(512) as usize,
-            Err(_) => 512,
+            Ok(batch_size_str) => batch_size_str.parse().unwrap_or(10) as usize,
+            Err(_) => 10,
         };
 
         println!("Batch size: {}", batch_size);
@@ -216,24 +216,22 @@ impl MessageStorage {
             })
             .collect::<Vec<_>>();
 
-        let output_res = inputs
-            .iter()
-            .zip(configs)
-            .map(|(input, config)| self.model.inference(&[input], Some(config.clone())))
-            .collect::<Vec<_>>();
+        // TODO: configs per input
+        let output_res = self.model.inference(&inputs, Some(configs[0].clone()));
 
-        let res = output_res
-            .into_iter()
-            .map(|res| {
-                let text = if let Ok(mut output) = res {
-                    output.pop().unwrap()
-                } else {
-                    "".to_string()
-                };
-
-                InferResponse { text }
-            })
-            .collect::<Vec<_>>();
+        let res = if let Ok(outputs) = output_res {
+            outputs
+                .into_iter()
+                .map(|text| InferResponse { text })
+                .collect()
+        } else {
+            inputs
+                .iter()
+                .map(|_| InferResponse {
+                    text: "".to_string(),
+                })
+                .collect()
+        };
 
         res
     }
