@@ -1,4 +1,4 @@
 torch==2.1.2
-transformers==4.35.2
+transformers==4.37.*
 accelerate==0.25.0
-vllm==0.2.7
+vllm==0.3.0
