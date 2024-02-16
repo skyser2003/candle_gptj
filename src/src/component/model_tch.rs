@@ -85,11 +85,11 @@ trait EndCriterion {
 }
 
 struct TopKLogitsWarper {
-    k: i64,
+    ks: Tensor,
 }
 
 struct TopPLogitsWarper {
-    p: f64,
+    ps: Tensor,
     min_tokens: i64,
 }
 
@@ -109,13 +109,35 @@ pub struct GenerationConfig {
     pub max_gen_tokens: Option<i32>,
 }
 
+impl TopKLogitsWarper {
+    fn new(ks: Vec<i64>) -> Self {
+        Self {
+            ks: Tensor::from_slice(&ks),
+        }
+    }
+}
+
 impl LogitsWarper for TopKLogitsWarper {
     fn process(&self, _: &Tensor, base_logits: &Tensor) -> Tensor {
-        let (top_k_logits, _) = base_logits.topk(self.k, -1, true, false);
-        let top_k_below = &top_k_logits.narrow(-1, top_k_logits.size()[1] - 1, 1);
-        let remove_indices = base_logits.less_tensor(&top_k_below);
+        let (mut logits, sorted_index) = base_logits.sort(-1, false);
 
-        base_logits.masked_fill(&remove_indices, -f64::INFINITY)
+        let vocab_size = logits.size()[1];
+        let top_k_mask = vocab_size - self.ks.to_kind(Kind::Int64);
+        let top_k_mask = logits.gather(1, &top_k_mask.unsqueeze(1), false);
+        let top_k_mask = top_k_mask.greater_tensor(&logits);
+
+        logits.masked_fill_(&top_k_mask, -f64::INFINITY);
+
+        logits.gather(1, &sorted_index, false)
+    }
+}
+
+impl TopPLogitsWarper {
+    fn new(ps: Vec<f64>, min_tokens: i64) -> Self {
+        Self {
+            ps: Tensor::from_slice(&ps),
+            min_tokens,
+        }
     }
 }
 
@@ -125,7 +147,7 @@ impl LogitsWarper for TopPLogitsWarper {
         let logits = logits.softmax(-1, Kind::Float);
         let cumsum_logits = logits.cumsum(-1, Kind::Float);
 
-        let top_p_below = cumsum_logits.ge(self.p);
+        let top_p_below = cumsum_logits.greater_equal_tensor(&self.ps);
         let _ = top_p_below.i((.., 0..self.min_tokens)).fill_(0);
 
         let remove_indices = top_p_below.scatter(1, &sorted_indices, &top_p_below);
@@ -450,15 +472,6 @@ impl ModelLoader {
 
         let max_gen_tokens = max_gen_tokens.max(1);
 
-        let top_p_warper = TopPLogitsWarper {
-            p: config.top_p.unwrap(),
-            min_tokens: 1,
-        };
-
-        let top_k_warper = TopKLogitsWarper {
-            k: config.top_k.unwrap(),
-        };
-
         let length_end_criterion = MaxLengthEndCriterion {
             max_length: all_input_lengths[0] + max_gen_tokens,
         };
@@ -468,10 +481,9 @@ impl ModelLoader {
         };
 
         // Warpers, EndCriterion trait vector
-        let warpers: Vec<&dyn LogitsWarper> = vec![&top_k_warper, &top_p_warper];
         let end_criteria: Vec<&dyn EndCriterion> = vec![&length_end_criterion, &eos_end_criterion];
 
-        for _ in 0..max_gen_tokens {
+        while all_input_lengths.len() != 0 {
             let (opt_past_key_values, past_length) = if let Some(past_key_values) = &past_key_values
             {
                 let pkv_size = past_key_values[0].0.size();
@@ -522,6 +534,14 @@ impl ModelLoader {
                 let vocab_size = logits_shape.pop().unwrap();
 
                 let base_logits = logits.reshape([-1, vocab_size]);
+
+                let top_p_warper =
+                    TopPLogitsWarper::new(vec![config.top_p.unwrap(); vocab_size as usize], 1);
+
+                let top_k_warper =
+                    TopKLogitsWarper::new(vec![config.top_k.unwrap(); vocab_size as usize]);
+
+                let warpers: Vec<&dyn LogitsWarper> = vec![&top_k_warper, &top_p_warper];
 
                 let base_logits = warpers.iter().fold(base_logits, |base_logits, warper| {
                     warper.process(&input_ids, &base_logits)
